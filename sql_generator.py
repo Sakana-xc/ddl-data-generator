@@ -257,17 +257,72 @@ VALUES
 # UI
 # =========================================
 
-st.title("DDL テストデータ生成（簡易版）")
+st.title("DDL テストデータ生成")
 
 ddl = st.text_area("DDL", height=200)
 
-n = st.number_input("ランダム件数", 1, 100, 5)
 
-if st.button("生成"):
+random_count = st.number_input("ランダム件数", 1, 1000, 5)
+
+
+col1, col2, col3 = st.columns(3)
+
+with col1:
+    btn_min = st.button("最小値生成")
+
+with col2:
+    btn_max = st.button("最大値生成")
+
+with col3:
+    btn_rand = st.button("ランダム生成")
+
+
+if btn_min or btn_max or btn_rand:
     table, cols = parse_ddl(ddl)
 
-    df = gen_rows(cols, n)
+    if not cols:
+        st.error("DDL解析失敗")
+        st.stop()
 
+    rows = []
+
+    # =========================
+    # 最小
+    # =========================
+    if btn_min:
+        row = {c["column_name"]: gen_value(c, "min") for c in cols}
+        row["_pattern"] = "MIN"
+        rows.append(row)
+
+    # =========================
+    # 最大
+    # =========================
+    if btn_max:
+        row = {c["column_name"]: gen_value(c, "max") for c in cols}
+        row["_pattern"] = "MAX"
+        rows.append(row)
+
+    # =========================
+    # 随机
+    # =========================
+    if btn_rand:
+        for i in range(random_count):
+            row = {c["column_name"]: gen_value(c, "random") for c in cols}
+            row["_pattern"] = f"RANDOM_{i+1}"
+            rows.append(row)
+
+    df = pd.DataFrame(rows)
+
+    st.subheader("生成結果")
+    st.dataframe(df, use_container_width=True)
+
+    # =========================
+    # SQL生成
+    # =========================
+    sql = build_sql(table, cols, df.drop(columns=["_pattern"]))
+
+    st.subheader("INSERT SQL")
+    st.code(sql, language="sql")
     st.dataframe(df)
 
     sql = build_sql(table, cols, df.drop(columns=["_pattern"]))
