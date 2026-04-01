@@ -157,30 +157,33 @@ def gen_number(col, mode, semantic):
     p = col["precision"] or 10
     s = col["scale"] or 0
 
-    if semantic == "YM":
-        return random.randint(200001, 203012)
+    int_digits = max(1, p - s)
 
-    if semantic == "ID":
-        return random.randint(1, 999999)
-
-    if semantic == "KBN":
-        return random.choice([0, 1, 9])
-
-    max_int = int("9" * (p - s))
-
-    if mode == "min":
-        return -max_int
+    # ========= 最大位数 =========
     if mode == "max":
-        return max_int
+        int_part = "9" * int_digits
+        if s == 0:
+            return int(int_part)
+        frac = "9" * s
+        return Decimal(f"{int_part}.{frac}")
 
-    val = random.randint(0, max_int)
+    # ========= 最小位数 =========
+    if mode == "min":
+        # 最小“有效位数”
+        if s == 0:
+            return 1
+        return Decimal("1." + "0" * s)
+
+    # ========= 随机 =========
+    max_int = min(10 ** min(int_digits, 9) - 1, 999_999_999)
+
+    val = random.randint(1, max_int)
 
     if s == 0:
         return val
 
-    frac = random.randint(0, int("9" * s))
+    frac = random.randint(0, 10**s - 1 if s < 6 else 999999)
     return Decimal(f"{val}.{str(frac).zfill(s)}")
-
 
 def gen_timestamp(col, mode):
     scale = col["ts_scale"]
