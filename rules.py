@@ -1,5 +1,5 @@
-import pandas as pd
 import re
+import pandas as pd
 import streamlit as st
 
 
@@ -24,7 +24,7 @@ def normalize_mark(val) -> bool:
         return False
 
     s = str(val).strip()
-    return s in {"〇", "○", "O", "o", "1", "True", "TRUE", "true", "有", "Y", "y"}
+    return s in {"〇", "○", "O", "o", "1", "True", "TRUE", "true", "Y", "y", "有"}
 
 
 def normalize_attr(val: str) -> str:
@@ -37,13 +37,29 @@ def normalize_attr(val: str) -> str:
     return s
 
 
+def parse_length_for_text(length_val):
+    """文字列用Length解析"""
+    if pd.isna(length_val):
+        return None
+
+    s = str(length_val).strip()
+    s = s.replace(" ", "").replace("　", "")
+
+    if s == "":
+        return None
+
+    if re.fullmatch(r"\d+", s):
+        return int(s)
+
+    return None
+
+
 def parse_length_for_number(length_val):
     """
     数字用Length解析
     例:
       21,4 -> (21, 4)
       21   -> (21, 0)
-      28,19 -> (28, 19)
     """
     if pd.isna(length_val):
         return None
@@ -65,21 +81,10 @@ def parse_length_for_number(length_val):
     return None
 
 
-def parse_length_for_text(length_val):
-    """文字列用Length解析"""
-    if pd.isna(length_val):
-        return None
-
-    s = str(length_val).strip()
-    s = s.replace(" ", "").replace("　", "")
-
-    if s == "":
-        return None
-
-    if re.fullmatch(r"\d+", s):
-        return int(s)
-
-    return None
+def is_text_attr(attr: str) -> bool:
+    """文字列属性判定"""
+    attr = normalize_attr(attr)
+    return attr in {"文字列", "文字"}
 
 
 def is_number_attr(attr: str) -> bool:
@@ -88,15 +93,16 @@ def is_number_attr(attr: str) -> bool:
     return attr in {"数字", "数値", "整数", "小数"}
 
 
-def is_text_attr(attr: str) -> bool:
-    """文字列属性判定"""
-    attr = normalize_attr(attr)
-    return attr in {"文字列", "文字"}
-
-
 def py_escape(s: str) -> str:
     """Python文字列エスケープ"""
     return s.replace("\\", "\\\\").replace('"', '\\"')
+
+
+def validate_required_columns(df: pd.DataFrame):
+    """必要列チェック"""
+    required_cols = [COL_ITEM_NAME, COL_ATTR, COL_LENGTH, COL_SCREEN, COL_REQUIRED]
+    missing = [c for c in required_cols if c not in df.columns]
+    return missing
 
 
 def build_rule_dict(row: pd.Series):
@@ -110,9 +116,11 @@ def build_rule_dict(row: pd.Series):
     length_val = row.get(COL_LENGTH, None)
     is_required = normalize_mark(row.get(COL_REQUIRED, None))
 
+    # 必須
     if is_required:
         rule["is_required"] = True
 
+    # 文字列
     if is_text_attr(attr):
         max_len = parse_length_for_text(length_val)
         if max_len is not None:
@@ -120,45 +128,44 @@ def build_rule_dict(row: pd.Series):
         else:
             todo_messages.append("length未定義")
 
+    # 数字
     elif is_number_attr(attr):
-        parsed = parse_length_for_number(length_val)
         rule["type"] = "number"
 
+        parsed = parse_length_for_number(length_val)
         if parsed is not None:
             p, s = parsed
             rule["common_check"] = f"number_{p}_{s}"
         else:
             todo_messages.append("precision/scale未定義")
+
+    # 不明属性
     else:
         todo_messages.append(f"属性未判定:{attr if attr else '空'}")
 
     return rule, todo_messages
 
 
-def validate_required_columns(df: pd.DataFrame):
-    """必要列チェック"""
-    required_cols = [COL_ITEM_NAME, COL_ATTR, COL_LENGTH, COL_SCREEN, COL_REQUIRED]
-    missing = [c for c in required_cols if c not in df.columns]
-    return missing
-
-
-def build_sheet_block(sheet_name: str, df: pd.DataFrame):
+def df_to_validation_code(sheet_name: str, df: pd.DataFrame):
     """
-    1sheet分のコード断片を生成する
+    DataFrame -> validation_rules.py文字列
     """
     missing = validate_required_columns(df)
     if missing:
         raise ValueError(f"Sheet [{sheet_name}] に必要な列がありません: {missing}")
 
+    # 項目名が空の行は除外
     work_df = df.copy()
     work_df[COL_ITEM_NAME] = work_df[COL_ITEM_NAME].fillna("").astype(str).str.strip()
     work_df = work_df[work_df[COL_ITEM_NAME] != ""].reset_index(drop=True)
 
+    # config（画面表示項目のみ）
     config_items = []
     for _, row in work_df.iterrows():
         if normalize_mark(row.get(COL_SCREEN, None)):
             config_items.append(str(row[COL_ITEM_NAME]).strip())
 
+    # validation_rule（全科目）
     rule_lines = []
     todo_list = []
 
@@ -168,13 +175,13 @@ def build_sheet_block(sheet_name: str, df: pd.DataFrame):
 
         if todos:
             todo_list.append({
-                "sheet_name": sheet_name,
                 "index": idx,
                 "item_name": item_name,
                 "todo": " / ".join(todos)
             })
 
         parts = []
+
         if "is_required" in rule:
             parts.append('"is_required": True')
         if "max_len" in rule:
@@ -191,67 +198,33 @@ def build_sheet_block(sheet_name: str, df: pd.DataFrame):
 
         rule_lines.append(f'            {idx}: {{{body}}},  {comment}')
 
+    # config部分
     config_lines = []
     for item in config_items:
         config_lines.append(f'            "{py_escape(item)}",')
 
-    block = []
-    block.append(f'    "{py_escape(sheet_name)}": {{')
-    block.append('        "config": [')
-    if config_lines:
-        block.extend(config_lines)
-    block.append("        ],")
-    block.append('        "validation_rule": {')
-    if rule_lines:
-        block.extend(rule_lines)
-    block.append("        }")
-    block.append("    }")
-
-    return "\n".join(block), work_df, pd.DataFrame(todo_list)
-
-
-def build_all_sheets_code(excel_file):
-    """
-    全sheet分のvalidation_rulesコードを生成する
-    """
-    xls = pd.ExcelFile(excel_file)
-    sheet_names = xls.sheet_names
-
-    all_blocks = []
-    all_todos = []
-    preview_info = []
-
-    for sheet_name in sheet_names:
-        df = pd.read_excel(excel_file, sheet_name=sheet_name)
-
-        block_text, work_df, todo_df = build_sheet_block(sheet_name, df)
-
-        all_blocks.append(block_text)
-        preview_info.append({
-            "sheet_name": sheet_name,
-            "row_count": len(work_df),
-            "config_count": int(work_df[COL_SCREEN].apply(normalize_mark).sum())
-        })
-
-        if not todo_df.empty:
-            all_todos.append(todo_df)
-
     code_lines = []
     code_lines.append("validation_rules = {")
-    for i, block in enumerate(all_blocks):
-        if i > 0:
-            code_lines.append("")
-        code_lines.append(block + ("," if i < len(all_blocks) - 1 else ""))
+    code_lines.append(f'    "{py_escape(sheet_name)}": {{')
+    code_lines.append('        "config": [')
+
+    if config_lines:
+        code_lines.extend(config_lines)
+
+    code_lines.append("        ],")
+    code_lines.append('        "validation_rule": {')
+
+    if rule_lines:
+        code_lines.extend(rule_lines)
+
+    code_lines.append("        }")
+    code_lines.append("    }")
     code_lines.append("}")
 
-    final_code = "\n".join(code_lines)
+    code_text = "\n".join(code_lines)
 
-    preview_df = pd.DataFrame(preview_info)
-    todo_df = pd.concat(all_todos, ignore_index=True) if all_todos else pd.DataFrame(
-        columns=["sheet_name", "index", "item_name", "todo"]
-    )
-
-    return final_code, preview_df, todo_df, sheet_names
+    todo_df = pd.DataFrame(todo_list)
+    return code_text, work_df, todo_df
 
 
 # =========================================
@@ -261,19 +234,30 @@ def build_all_sheets_code(excel_file):
 st.set_page_config(page_title="Excel→validation_rules 生成ツール", layout="wide")
 st.title("Excel → validation_rules.py 生成ツール")
 
-uploaded_file = st.file_uploader("Excelファイルをアップロード", type=["xlsx", "xlsm", "xls"])
+uploaded_file = st.file_uploader(
+    "Excelファイルをアップロード",
+    type=["xlsx", "xlsm", "xls"]
+)
 
 if uploaded_file is not None:
     try:
         xls = pd.ExcelFile(uploaded_file)
+        sheet_names = xls.sheet_names
+
         st.subheader("Sheet一覧")
-        st.write(xls.sheet_names)
+        st.write(sheet_names)
 
-        if st.button("全Sheetコード生成", type="primary"):
-            code_text, preview_df, todo_df, sheet_names = build_all_sheets_code(uploaded_file)
+        sheet_name = st.selectbox("Sheetを選択", sheet_names)
 
-            st.subheader("生成対象一覧")
-            st.dataframe(preview_df, use_container_width=True)
+        preview_df = pd.read_excel(uploaded_file, sheet_name=sheet_name)
+
+        st.subheader("Excelプレビュー")
+        st.dataframe(preview_df, use_container_width=True)
+
+        if st.button("コード生成", type="primary"):
+            df = pd.read_excel(uploaded_file, sheet_name=sheet_name)
+
+            code_text, work_df, todo_df = df_to_validation_code(sheet_name, df)
 
             st.subheader("生成コード")
             st.code(code_text, language="python")
@@ -281,9 +265,13 @@ if uploaded_file is not None:
             st.download_button(
                 label="validation_rules.py ダウンロード",
                 data=code_text.encode("utf-8"),
-                file_name="validation_rules.py",
+                file_name=f"validation_rules_{sheet_name}.py",
                 mime="text/plain"
             )
+
+            st.subheader("対象科目一覧（全科目）")
+            show_cols = [COL_ITEM_NAME, COL_ATTR, COL_LENGTH, COL_SCREEN, COL_REQUIRED]
+            st.dataframe(work_df[show_cols], use_container_width=True)
 
             st.subheader("TODO一覧")
             if todo_df.empty:
