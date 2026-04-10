@@ -801,7 +801,7 @@ def build_test_case_df(sheet_name: str, rep_df: pd.DataFrame):
         })
         no += 1
 
-    # ケース件数を20〜30件想定に調整（上限30）
+    # ケース件数は上限で切らず、生成した内容をそのまま出力
     case_df = pd.DataFrame(rows)
     if not case_df.empty:
         point_order = {
@@ -818,8 +818,6 @@ def build_test_case_df(sheet_name: str, rep_df: pd.DataFrame):
         case_df["_point_order"] = case_df["観点"].map(point_order).fillna(99)
         case_df = case_df.sort_values(by=["_point_order", "分類", "代表科目"]).drop(columns=["_point_order"])
 
-    if len(case_df) > 30:
-        case_df = case_df.head(30).copy()
     case_df["No"] = range(1, len(case_df) + 1)
 
     return case_df
