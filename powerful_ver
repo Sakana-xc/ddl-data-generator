@@ -736,6 +736,71 @@ def build_test_case_df(sheet_name: str, rep_df: pd.DataFrame):
         })
         no += 1
 
+    # 全代表科目同時エラーケース
+    if not rep_df.empty:
+        all_items = list(rep_df["補正項目名"])
+        all_item_text = " / ".join(all_items)
+
+        all_required_error_input = []
+        all_required_error_expected = []
+        all_mixed_error_input = []
+        all_mixed_error_expected = []
+
+        for _, rr in rep_df.iterrows():
+            name = rr["補正項目名"]
+            rtype = rr["rule種別"]
+
+            # 必須異常（全科目）
+            all_required_error_input.append(f"{name}=''")
+            all_required_error_expected.append(f"{name}:必須")
+
+            # 型/形式異常（科目種別ごと）
+            if rtype in {"短文字", "長文字", "文字(長さ不明)"}:
+                all_mixed_error_input.append(f"{name}='X' * 999")
+                all_mixed_error_expected.append(f"{name}:桁数異常")
+            elif rtype in {"短数字", "長数字"}:
+                all_mixed_error_input.append(f"{name}='ABC'")
+                all_mixed_error_expected.append(f"{name}:型異常")
+            elif rtype in {"小数(短)", "小数(長)", "金額"}:
+                all_mixed_error_input.append(f"{name}='1.234567890123'")
+                all_mixed_error_expected.append(f"{name}:小数桁異常")
+            elif rtype == "コード値":
+                all_mixed_error_input.append(f"{name}='ZZ'")
+                all_mixed_error_expected.append(f"{name}:コード値異常")
+            elif rtype == "年月日付":
+                all_mixed_error_input.append(f"{name}='2026/04'")
+                all_mixed_error_expected.append(f"{name}:形式異常")
+            elif rtype == "日付":
+                all_mixed_error_input.append(f"{name}='20260230'")
+                all_mixed_error_expected.append(f"{name}:形式異常")
+            else:
+                all_mixed_error_input.append(f"{name}='@@@'")
+                all_mixed_error_expected.append(f"{name}:入力異常")
+
+        rows.append({
+            "No": no,
+            "Sheet名": sheet_name,
+            "代表科目": all_item_text,
+            "分類": "複合",
+            "観点": "全代表科目異常",
+            "テスト内容": "全代表科目を未入力で同時登録する",
+            "入力値": ", ".join(all_required_error_input),
+            "期待結果": " / ".join(all_required_error_expected),
+        })
+        no += 1
+
+        rows.append({
+            "No": no,
+            "Sheet名": sheet_name,
+            "代表科目": all_item_text,
+            "分類": "複合",
+            "観点": "全代表科目異常",
+            "テスト内容": "全代表科目に種別別の異常値を同時入力する",
+            "入力値": ", ".join(all_mixed_error_input),
+            "期待結果": " / ".join(all_mixed_error_expected),
+        })
+        no += 1
+
     # ケース件数を20〜30件想定に調整（上限30）
     case_df = pd.DataFrame(rows)
     if not case_df.empty:
@@ -748,6 +813,7 @@ def build_test_case_df(sheet_name: str, rep_df: pd.DataFrame):
             "小数桁異常": 6,
             "形式異常": 7,
             "複数科目異常": 8,
+            "全代表科目異常": 9,
         }
         case_df["_point_order"] = case_df["観点"].map(point_order).fillna(99)
         case_df = case_df.sort_values(by=["_point_order", "分類", "代表科目"]).drop(columns=["_point_order"])
