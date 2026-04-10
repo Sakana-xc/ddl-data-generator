@@ -100,6 +100,11 @@ def py_escape(s: str) -> str:
     return s.replace("\\", "\\\\").replace('"', '\\"')
 
 
+def normalize_name_for_detection(name: str) -> str:
+    """科目名判定用に空白を除去"""
+    return normalize_text(name).replace("　", "").replace(" ", "").upper()
+
+
 def validate_required_columns(df: pd.DataFrame):
     """必要列チェック"""
     required_cols = [COL_ITEM_NAME, COL_ATTR, COL_LENGTH, COL_SCREEN, COL_REQUIRED]
@@ -249,28 +254,53 @@ def df_to_validation_code(sheet_name: str, df: pd.DataFrame):
 # 科目汇总 / 分类
 # =========================================
 
-def classify_rule_type(attr, length_val):
+def is_date_like_subject(item_name: str) -> bool:
+    """
+    属性に日付が無いケース向け：
+    科目名から日付系を判定する
+    """
+    n = normalize_name_for_detection(item_name)
+    keywords = [
+        "年月",
+        "年",
+        "月",
+        "日",
+        "基準日",
+        "対象日",
+        "日付",
+        "DATE",
+        "DT",
+        "YM",
+        "YMD",
+    ]
+    return any(k in n for k in keywords)
+
+
+def classify_rule_type(item_name, attr, length_val):
     """
     字段分类：
-    - text_short
-    - text_middle
-    - text_long
-    - number_int
-    - number_decimal
+    - text_short / text_long
+    - number_short / number_long
+    - decimal_short / decimal_long
+    - date_ym / date_day
     - unknown
     """
     attr = normalize_attr(attr)
+    item_name = normalize_text(item_name)
+
+    if is_date_like_subject(item_name):
+        n = normalize_name_for_detection(item_name)
+        if "YM" in n or "年月" in n or ("年" in n and "月" in n and "日" not in n):
+            return "date_ym"
+        return "date_day"
 
     if is_text_attr(attr):
         ln = parse_length_for_text(length_val)
         if ln is None:
             return "text_unknown"
-        if ln == 1:
+        if ln <= 10:
             return "text_short"
-        elif ln <= 20:
-            return "text_middle"
-        else:
-            return "text_long"
+        return "text_long"
 
     if is_number_attr(attr):
         parsed = parse_length_for_number(length_val)
@@ -278,8 +308,12 @@ def classify_rule_type(attr, length_val):
             return "number_unknown"
         p, s = parsed
         if s == 0:
-            return "number_int"
-        return "number_decimal"
+            if p <= 9:
+                return "number_short"
+            return "number_long"
+        if p <= 9:
+            return "decimal_short"
+        return "decimal_long"
 
     return "unknown"
 
@@ -293,7 +327,7 @@ def build_subject_summary(sheet_name: str, work_df: pd.DataFrame):
         length_val = normalize_text(row.get(COL_LENGTH))
         screen = normalize_mark(row.get(COL_SCREEN))
         required = normalize_mark(row.get(COL_REQUIRED))
-        rule_type = classify_rule_type(attr, row.get(COL_LENGTH))
+        rule_type = classify_rule_type(item_name, attr, row.get(COL_LENGTH))
 
         rows.append({
             "Sheet名": sheet_name,
@@ -371,13 +405,19 @@ def choose_representatives(summary_df: pd.DataFrame):
     if summary_df.empty:
         return pd.DataFrame()
 
-    work = summary_df.copy()
+    # テスト対象は画面表示項目のみ
+    work = summary_df[summary_df["画面表示"] == True].copy()
+    if work.empty:
+        return pd.DataFrame()
+
     work["_screen_priority"] = work["画面表示"].apply(lambda x: 0 if x else 1)
     work["_required_priority"] = work["必須"].apply(lambda x: 0 if x else 1)
 
     work = work.sort_values(by=["rule種別", "_screen_priority", "_required_priority", "No"])
     rep_df = work.groupby("rule種別", as_index=False).first()
 
+    # 代表科目は約10件に収める
+    rep_df = rep_df.sort_values(by=["_screen_priority", "_required_priority", "No"]).head(10)
     return rep_df.drop(columns=["_screen_priority", "_required_priority"], errors="ignore")
 
 
@@ -410,7 +450,7 @@ def build_test_case_df(sheet_name: str, rep_df: pd.DataFrame):
             no += 1
 
         # text
-        if rule_type in {"text_short", "text_middle", "text_long", "text_unknown"}:
+        if rule_type in {"text_short", "text_long", "text_unknown"}:
             ln = None
             try:
                 ln = int(length_val)
@@ -443,7 +483,7 @@ def build_test_case_df(sheet_name: str, rep_df: pd.DataFrame):
                 no += 1
 
         # integer
-        elif rule_type == "number_int":
+        elif rule_type in {"number_short", "number_long"}:
             parsed = parse_length_for_number(length_val)
             p = parsed[0] if parsed else None
 
@@ -485,7 +525,7 @@ def build_test_case_df(sheet_name: str, rep_df: pd.DataFrame):
                 no += 1
 
         # decimal
-        elif rule_type == "number_decimal":
+        elif rule_type in {"decimal_short", "decimal_long"}:
             parsed = parse_length_for_number(length_val)
             p = parsed[0] if parsed else None
             s = parsed[1] if parsed else None
@@ -527,7 +567,62 @@ def build_test_case_df(sheet_name: str, rep_df: pd.DataFrame):
                 })
                 no += 1
 
-    return pd.DataFrame(rows)
+        # date by subject name (no date attr in source)
+        elif rule_type in {"date_ym", "date_day"}:
+            if rule_type == "date_ym":
+                rows.append({
+                    "No": no,
+                    "Sheet名": sheet_name,
+                    "代表科目": item_name,
+                    "分類": rule_type,
+                    "観点": "正常",
+                    "テスト内容": "YYYYMM形式で入力する",
+                    "入力値": "202604",
+                    "期待結果": "正常に登録できること",
+                })
+                no += 1
+                rows.append({
+                    "No": no,
+                    "Sheet名": sheet_name,
+                    "代表科目": item_name,
+                    "分類": rule_type,
+                    "観点": "形式異常",
+                    "テスト内容": "YYYYMM以外を入力する",
+                    "入力値": "2026/04",
+                    "期待結果": "形式エラーとなること",
+                })
+                no += 1
+            else:
+                rows.append({
+                    "No": no,
+                    "Sheet名": sheet_name,
+                    "代表科目": item_name,
+                    "分類": rule_type,
+                    "観点": "正常",
+                    "テスト内容": "YYYYMMDD形式で入力する",
+                    "入力値": "20260410",
+                    "期待結果": "正常に登録できること",
+                })
+                no += 1
+                rows.append({
+                    "No": no,
+                    "Sheet名": sheet_name,
+                    "代表科目": item_name,
+                    "分類": rule_type,
+                    "観点": "形式異常",
+                    "テスト内容": "日付不正を入力する",
+                    "入力値": "20260230",
+                    "期待結果": "形式エラーとなること",
+                })
+                no += 1
+
+    # ケース件数を20〜30件想定に調整（上限30）
+    case_df = pd.DataFrame(rows)
+    if len(case_df) > 30:
+        case_df = case_df.head(30).copy()
+        case_df["No"] = range(1, len(case_df) + 1)
+
+    return case_df
 
 
 # =========================================
