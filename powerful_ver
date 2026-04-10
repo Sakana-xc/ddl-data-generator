@@ -260,20 +260,67 @@ def is_date_like_subject(item_name: str) -> bool:
     科目名から日付系を判定する
     """
     n = normalize_name_for_detection(item_name)
+    # 「年」「月」「日」の単独文字は誤判定が多いため使わない
     keywords = [
         "年月",
-        "年",
-        "月",
-        "日",
         "基準日",
         "対象日",
         "日付",
+        "計上日",
+        "更新日",
+        "作成日",
+        "決済日",
+        "償還日",
         "DATE",
         "DT",
         "YM",
         "YMD",
     ]
     return any(k in n for k in keywords)
+
+
+def detect_name_semantic(item_name: str) -> str:
+    """
+    科目名の意味判定
+    - amount: 金額系
+    - code: コード/区分系
+    - date: 日付系
+    - normal
+    """
+    n = normalize_name_for_detection(item_name)
+
+    if is_date_like_subject(item_name):
+        return "date"
+
+    amount_keywords = [
+        "金額",
+        "残高",
+        "簿価",
+        "価格",
+        "価額",
+        "利息",
+        "手数料",
+        "元本",
+        "税額",
+        "額面",
+    ]
+    if any(k in n for k in amount_keywords):
+        return "amount"
+
+    code_keywords = [
+        "区分",
+        "種別",
+        "コード",
+        "CD",
+        "KBN",
+        "フラグ",
+        "通貨",
+        "分類",
+    ]
+    if any(k in n for k in code_keywords):
+        return "code"
+
+    return "normal"
 
 
 def classify_rule_type(item_name, attr, length_val):
@@ -287,14 +334,17 @@ def classify_rule_type(item_name, attr, length_val):
     """
     attr = normalize_attr(attr)
     item_name = normalize_text(item_name)
+    semantic = detect_name_semantic(item_name)
 
-    if is_date_like_subject(item_name):
+    if semantic == "date":
         n = normalize_name_for_detection(item_name)
         if "YM" in n or "年月" in n or ("年" in n and "月" in n and "日" not in n):
             return "年月日付"
         return "日付"
 
     if is_text_attr(attr):
+        if semantic == "code":
+            return "コード値"
         ln = parse_length_for_text(length_val)
         if ln is None:
             return "文字(長さ不明)"
@@ -307,6 +357,12 @@ def classify_rule_type(item_name, attr, length_val):
         if parsed is None:
             return "数字(長さ不明)"
         p, s = parsed
+
+        if semantic == "amount":
+            return "金額"
+        if semantic == "code":
+            return "コード値"
+
         if s == 0:
             if p <= 9:
                 return "短数字"
@@ -531,7 +587,7 @@ def build_test_case_df(sheet_name: str, rep_df: pd.DataFrame):
                 no += 1
 
         # decimal
-        elif rule_type in {"小数(短)", "小数(長)"}:
+        elif rule_type in {"小数(短)", "小数(長)", "金額"}:
             parsed = parse_length_for_number(length_val)
             s = parsed[1] if parsed else None
 
@@ -576,6 +632,31 @@ def build_test_case_df(sheet_name: str, rep_df: pd.DataFrame):
                     "期待結果": "common check エラーとなること",
                 })
                 no += 1
+
+        # code (text/number)
+        elif rule_type == "コード値":
+            rows.append({
+                "No": no,
+                "Sheet名": sheet_name,
+                "代表科目": item_name,
+                "分類": rule_type,
+                "観点": "正常",
+                "テスト内容": "定義済みコード値を入力する",
+                "入力値": "01",
+                "期待結果": "正常に登録できること",
+            })
+            no += 1
+            rows.append({
+                "No": no,
+                "Sheet名": sheet_name,
+                "代表科目": item_name,
+                "分類": rule_type,
+                "観点": "形式異常",
+                "テスト内容": "未定義コード値を入力する",
+                "入力値": "ZZ",
+                "期待結果": "コード値エラーとなること",
+            })
+            no += 1
 
         # date by subject name (no date attr in source)
         elif rule_type in {"年月日付", "日付"}:
