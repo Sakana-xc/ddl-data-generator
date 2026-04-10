@@ -1,0 +1,640 @@
+import re
+import pandas as pd
+import streamlit as st
+
+
+# =========================================
+# 列名定義
+# =========================================
+
+COL_ITEM_NAME = "補正項目名"
+COL_ATTR = "属性"
+COL_LENGTH = "Length"
+COL_SCREEN = "画面表示項目"
+COL_REQUIRED = "必須チェック"
+
+
+# =========================================
+# 共通関数
+# =========================================
+
+def normalize_mark(val) -> bool:
+    """〇/○/O/1/True系をTrue扱いにする"""
+    if pd.isna(val):
+        return False
+
+    s = str(val).strip()
+    return s in {"〇", "○", "O", "o", "1", "True", "TRUE", "true", "Y", "y", "有"}
+
+
+def normalize_attr(val: str) -> str:
+    """属性を正規化する"""
+    if pd.isna(val):
+        return ""
+
+    s = str(val).strip()
+    s = s.replace("　", "").replace(" ", "")
+    return s
+
+
+def normalize_text(val) -> str:
+    if pd.isna(val):
+        return ""
+    return str(val).strip()
+
+
+def parse_length_for_text(length_val):
+    """文字列用Length解析"""
+    if pd.isna(length_val):
+        return None
+
+    s = str(length_val).strip().replace(" ", "").replace("　", "")
+    if s == "":
+        return None
+
+    if re.fullmatch(r"\d+", s):
+        return int(s)
+
+    return None
+
+
+def parse_length_for_number(length_val):
+    """
+    数字用Length解析
+    例:
+      21,4 -> (21, 4)
+      21   -> (21, 0)
+    """
+    if pd.isna(length_val):
+        return None
+
+    s = str(length_val).strip().replace(" ", "").replace("　", "")
+    if s == "":
+        return None
+
+    m = re.fullmatch(r"(\d+),(\d+)", s)
+    if m:
+        return int(m.group(1)), int(m.group(2))
+
+    m = re.fullmatch(r"(\d+)", s)
+    if m:
+        return int(m.group(1)), 0
+
+    return None
+
+
+def is_text_attr(attr: str) -> bool:
+    """文字列属性判定"""
+    attr = normalize_attr(attr)
+    return attr in {"文字列", "文字"}
+
+
+def is_number_attr(attr: str) -> bool:
+    """数字属性判定"""
+    attr = normalize_attr(attr)
+    return attr in {"数字", "数値", "整数", "小数"}
+
+
+def py_escape(s: str) -> str:
+    """Python文字列エスケープ"""
+    return s.replace("\\", "\\\\").replace('"', '\\"')
+
+
+def validate_required_columns(df: pd.DataFrame):
+    """必要列チェック"""
+    required_cols = [COL_ITEM_NAME, COL_ATTR, COL_LENGTH, COL_SCREEN, COL_REQUIRED]
+    missing = [c for c in required_cols if c not in df.columns]
+    return missing
+
+
+# =========================================
+# validation rule生成
+# =========================================
+
+def build_rule_dict(row: pd.Series):
+    """
+    1行からrule dictとtodo文言を生成する
+    """
+    rule = {}
+    todo_messages = []
+
+    attr = normalize_attr(row.get(COL_ATTR, ""))
+    length_val = row.get(COL_LENGTH, None)
+    is_required = normalize_mark(row.get(COL_REQUIRED, None))
+
+    if is_required:
+        rule["is_required"] = True
+
+    if is_text_attr(attr):
+        max_len = parse_length_for_text(length_val)
+        if max_len is not None:
+            rule["max_len"] = max_len
+        else:
+            todo_messages.append("length未定義")
+
+    elif is_number_attr(attr):
+        rule["type"] = "number"
+
+        parsed = parse_length_for_number(length_val)
+        if parsed is not None:
+            p, s = parsed
+            rule["common_check"] = f"number_{p}_{s}"
+        else:
+            todo_messages.append("precision/scale未定義")
+
+    else:
+        todo_messages.append(f"属性未判定:{attr if attr else '空'}")
+
+    return rule, todo_messages
+
+
+def build_rule_summary(rule: dict) -> str:
+    if not rule:
+        return ""
+
+    parts = []
+    if "is_required" in rule:
+        parts.append("is_required=True")
+    if "max_len" in rule:
+        parts.append(f"max_len={rule['max_len']}")
+    if "common_check" in rule:
+        parts.append(f"common_check={rule['common_check']}")
+    if "type" in rule:
+        parts.append(f"type={rule['type']}")
+
+    return ", ".join(parts)
+
+
+def df_to_validation_code(sheet_name: str, df: pd.DataFrame):
+    """
+    DataFrame -> validation_rules.py文字列
+    """
+    missing = validate_required_columns(df)
+    if missing:
+        raise ValueError(f"Sheet [{sheet_name}] に必要な列がありません: {missing}")
+
+    work_df = df.copy()
+    work_df[COL_ITEM_NAME] = work_df[COL_ITEM_NAME].fillna("").astype(str).str.strip()
+    work_df = work_df[work_df[COL_ITEM_NAME] != ""].reset_index(drop=True)
+
+    # config
+    config_items = []
+    for _, row in work_df.iterrows():
+        if normalize_mark(row.get(COL_SCREEN, None)):
+            config_items.append(str(row[COL_ITEM_NAME]).strip())
+
+    # validation_rule
+    rule_lines = []
+    todo_list = []
+    rule_dict_map = {}
+
+    for idx, row in work_df.iterrows():
+        item_name = str(row[COL_ITEM_NAME]).strip()
+        rule, todos = build_rule_dict(row)
+        rule_dict_map[idx] = rule
+
+        if todos:
+            todo_list.append({
+                "No": idx,
+                "補正項目名": item_name,
+                "TODO": " / ".join(todos)
+            })
+
+        parts = []
+        if "is_required" in rule:
+            parts.append('"is_required": True')
+        if "max_len" in rule:
+            parts.append(f'"max_len": {rule["max_len"]}')
+        if "common_check" in rule:
+            parts.append(f'"common_check": "{rule["common_check"]}"')
+        if "type" in rule:
+            parts.append(f'"type": "{rule["type"]}"')
+
+        body = ", ".join(parts)
+        comment = f"# {item_name}"
+        if todos:
+            comment += f"  ← TODO: {' / '.join(todos)}"
+
+        rule_lines.append(f'            {idx}: {{{body}}},  {comment}')
+
+    config_lines = []
+    for item in config_items:
+        config_lines.append(f'            "{py_escape(item)}",')
+
+    code_lines = []
+    code_lines.append("validation_rules = {")
+    code_lines.append(f'    "{py_escape(sheet_name)}": {{')
+    code_lines.append('        "config": [')
+
+    if config_lines:
+        code_lines.extend(config_lines)
+
+    code_lines.append("        ],")
+    code_lines.append('        "validation_rule": {')
+
+    if rule_lines:
+        code_lines.extend(rule_lines)
+
+    code_lines.append("        }")
+    code_lines.append("    }")
+    code_lines.append("}")
+
+    code_text = "\n".join(code_lines)
+
+    todo_df = pd.DataFrame(todo_list)
+    return code_text, work_df, todo_df, config_items, rule_dict_map
+
+
+# =========================================
+# 科目汇总 / 分类
+# =========================================
+
+def classify_rule_type(attr, length_val):
+    """
+    字段分类：
+    - text_short
+    - text_middle
+    - text_long
+    - number_int
+    - number_decimal
+    - unknown
+    """
+    attr = normalize_attr(attr)
+
+    if is_text_attr(attr):
+        ln = parse_length_for_text(length_val)
+        if ln is None:
+            return "text_unknown"
+        if ln == 1:
+            return "text_short"
+        elif ln <= 20:
+            return "text_middle"
+        else:
+            return "text_long"
+
+    if is_number_attr(attr):
+        parsed = parse_length_for_number(length_val)
+        if parsed is None:
+            return "number_unknown"
+        p, s = parsed
+        if s == 0:
+            return "number_int"
+        return "number_decimal"
+
+    return "unknown"
+
+
+def build_subject_summary(sheet_name: str, work_df: pd.DataFrame):
+    rows = []
+
+    for idx, row in work_df.iterrows():
+        item_name = normalize_text(row.get(COL_ITEM_NAME))
+        attr = normalize_text(row.get(COL_ATTR))
+        length_val = normalize_text(row.get(COL_LENGTH))
+        screen = normalize_mark(row.get(COL_SCREEN))
+        required = normalize_mark(row.get(COL_REQUIRED))
+        rule_type = classify_rule_type(attr, row.get(COL_LENGTH))
+
+        rows.append({
+            "Sheet名": sheet_name,
+            "No": idx,
+            "補正項目名": item_name,
+            "属性": attr,
+            "Length": length_val,
+            "画面表示": screen,
+            "必須": required,
+            "rule種別": rule_type,
+        })
+
+    return pd.DataFrame(rows)
+
+
+# =========================================
+# mapping
+# =========================================
+
+def build_mapping_df(sheet_name: str, summary_df: pd.DataFrame, config_items: list, rule_dict_map: dict):
+    rows = []
+
+    for _, r in summary_df.iterrows():
+        idx = r["No"]
+        item_name = r["補正項目名"]
+        screen_excel = r["画面表示"]
+        required_excel = r["必須"]
+        attr = r["属性"]
+        length_val = r["Length"]
+
+        expected_rule, _ = build_rule_dict(pd.Series({
+            COL_ATTR: attr,
+            COL_LENGTH: length_val,
+            COL_REQUIRED: "〇" if required_excel else ""
+        }))
+
+        actual_rule = rule_dict_map.get(idx, {})
+
+        config_target = item_name in config_items
+
+        mapping_result = "OK"
+        if config_target != screen_excel:
+            mapping_result = "NG: config不一致"
+        elif expected_rule != actual_rule:
+            mapping_result = "NG: rule不一致"
+
+        rows.append({
+            "Sheet名": sheet_name,
+            "No": idx,
+            "補正項目名": item_name,
+            "外部設計_属性": attr,
+            "外部設計_Length": length_val,
+            "外部設計_画面表示": screen_excel,
+            "外部設計_必須": required_excel,
+            "rules_config対象": config_target,
+            "rules_validation_rule": build_rule_summary(actual_rule),
+            "mapping結果": mapping_result,
+        })
+
+    return pd.DataFrame(rows)
+
+
+# =========================================
+# 代表科目
+# =========================================
+
+def choose_representatives(summary_df: pd.DataFrame):
+    """
+    每种类型选一个代表科目
+    优先：
+    1. 画面表示=True
+    2. 必須=True
+    3. No小
+    """
+    if summary_df.empty:
+        return pd.DataFrame()
+
+    work = summary_df.copy()
+    work["_screen_priority"] = work["画面表示"].apply(lambda x: 0 if x else 1)
+    work["_required_priority"] = work["必須"].apply(lambda x: 0 if x else 1)
+
+    work = work.sort_values(by=["rule種別", "_screen_priority", "_required_priority", "No"])
+    rep_df = work.groupby("rule種別", as_index=False).first()
+
+    return rep_df.drop(columns=["_screen_priority", "_required_priority"], errors="ignore")
+
+
+# =========================================
+# test case
+# =========================================
+
+def build_test_case_df(sheet_name: str, rep_df: pd.DataFrame):
+    rows = []
+    no = 1
+
+    for _, r in rep_df.iterrows():
+        item_name = r["補正項目名"]
+        rule_type = r["rule種別"]
+        required = r["必須"]
+        length_val = r["Length"]
+
+        # 必須
+        if required:
+            rows.append({
+                "No": no,
+                "Sheet名": sheet_name,
+                "代表科目": item_name,
+                "分類": rule_type,
+                "観点": "必須",
+                "テスト内容": "未入力で登録する",
+                "入力値": "NULL",
+                "期待結果": "必須エラーとなること",
+            })
+            no += 1
+
+        # text
+        if rule_type in {"text_short", "text_middle", "text_long", "text_unknown"}:
+            ln = None
+            try:
+                ln = int(length_val)
+            except Exception:
+                ln = None
+
+            if ln:
+                rows.append({
+                    "No": no,
+                    "Sheet名": sheet_name,
+                    "代表科目": item_name,
+                    "分類": rule_type,
+                    "観点": "桁数正常",
+                    "テスト内容": "最大桁数ちょうどで入力する",
+                    "入力値": f"{ln}桁文字列",
+                    "期待結果": "正常に登録できること",
+                })
+                no += 1
+
+                rows.append({
+                    "No": no,
+                    "Sheet名": sheet_name,
+                    "代表科目": item_name,
+                    "分類": rule_type,
+                    "観点": "桁数異常",
+                    "テスト内容": "最大桁数超過で入力する",
+                    "入力値": f"{ln + 1}桁文字列",
+                    "期待結果": "桁数エラーとなること",
+                })
+                no += 1
+
+        # integer
+        elif rule_type == "number_int":
+            parsed = parse_length_for_number(length_val)
+            p = parsed[0] if parsed else None
+
+            rows.append({
+                "No": no,
+                "Sheet名": sheet_name,
+                "代表科目": item_name,
+                "分類": rule_type,
+                "観点": "正常",
+                "テスト内容": "正常な整数値を入力する",
+                "入力値": "123",
+                "期待結果": "正常に登録できること",
+            })
+            no += 1
+
+            rows.append({
+                "No": no,
+                "Sheet名": sheet_name,
+                "代表科目": item_name,
+                "分類": rule_type,
+                "観点": "型異常",
+                "テスト内容": "非数字を入力する",
+                "入力値": "ABC",
+                "期待結果": "型エラーとなること",
+            })
+            no += 1
+
+            if p:
+                rows.append({
+                    "No": no,
+                    "Sheet名": sheet_name,
+                    "代表科目": item_name,
+                    "分類": rule_type,
+                    "観点": "桁数異常",
+                    "テスト内容": "整数桁数超過で入力する",
+                    "入力値": f"{p + 1}桁数値",
+                    "期待結果": "common check エラーとなること",
+                })
+                no += 1
+
+        # decimal
+        elif rule_type == "number_decimal":
+            parsed = parse_length_for_number(length_val)
+            p = parsed[0] if parsed else None
+            s = parsed[1] if parsed else None
+
+            rows.append({
+                "No": no,
+                "Sheet名": sheet_name,
+                "代表科目": item_name,
+                "分類": rule_type,
+                "観点": "正常",
+                "テスト内容": "正常な小数値を入力する",
+                "入力値": "123.45",
+                "期待結果": "正常に登録できること",
+            })
+            no += 1
+
+            rows.append({
+                "No": no,
+                "Sheet名": sheet_name,
+                "代表科目": item_name,
+                "分類": rule_type,
+                "観点": "型異常",
+                "テスト内容": "非数字を入力する",
+                "入力値": "ABC",
+                "期待結果": "型エラーとなること",
+            })
+            no += 1
+
+            if s is not None:
+                rows.append({
+                    "No": no,
+                    "Sheet名": sheet_name,
+                    "代表科目": item_name,
+                    "分類": rule_type,
+                    "観点": "小数桁異常",
+                    "テスト内容": "小数桁数超過で入力する",
+                    "入力値": f"小数{s + 1}桁数値",
+                    "期待結果": "common check エラーとなること",
+                })
+                no += 1
+
+    return pd.DataFrame(rows)
+
+
+# =========================================
+# UI
+# =========================================
+
+st.set_page_config(page_title="Excel→validation_rules + mapping + test case", layout="wide")
+st.title("Excel → validation_rules / 科目汇总 / mapping / test case")
+
+uploaded_file = st.file_uploader(
+    "外部設計Excelファイルをアップロード",
+    type=["xlsx", "xlsm", "xls"]
+)
+
+if uploaded_file is not None:
+    try:
+        xls = pd.ExcelFile(uploaded_file)
+        sheet_names = xls.sheet_names
+
+        st.subheader("Sheet一覧")
+        st.write(sheet_names)
+
+        sheet_name = st.selectbox("Sheetを選択", sheet_names)
+
+        preview_df = pd.read_excel(uploaded_file, sheet_name=sheet_name)
+
+        st.subheader("Excelプレビュー")
+        st.dataframe(preview_df, use_container_width=True)
+
+        if st.button("生成", type="primary"):
+            df = pd.read_excel(uploaded_file, sheet_name=sheet_name)
+
+            code_text, work_df, todo_df, config_items, rule_dict_map = df_to_validation_code(sheet_name, df)
+            summary_df = build_subject_summary(sheet_name, work_df)
+            mapping_df = build_mapping_df(sheet_name, summary_df, config_items, rule_dict_map)
+            rep_df = choose_representatives(summary_df)
+            test_case_df = build_test_case_df(sheet_name, rep_df)
+
+            tab1, tab2, tab3, tab4, tab5 = st.tabs([
+                "validation_rules",
+                "科目汇总",
+                "mapping",
+                "代表科目",
+                "test case",
+            ])
+
+            with tab1:
+                st.subheader("生成コード")
+                st.code(code_text, language="python")
+
+                st.download_button(
+                    label="validation_rules.py ダウンロード",
+                    data=code_text.encode("utf-8"),
+                    file_name=f"validation_rules_{sheet_name}.py",
+                    mime="text/plain"
+                )
+
+                st.subheader("TODO一覧")
+                if todo_df.empty:
+                    st.success("TODOなし")
+                else:
+                    st.warning(f"TODOあり: {len(todo_df)}件")
+                    st.dataframe(todo_df, use_container_width=True)
+
+            with tab2:
+                st.subheader("科目汇总")
+                st.dataframe(summary_df, use_container_width=True)
+
+                st.download_button(
+                    label="科目汇总 CSV ダウンロード",
+                    data=summary_df.to_csv(index=False).encode("utf-8-sig"),
+                    file_name=f"subject_summary_{sheet_name}.csv",
+                    mime="text/csv"
+                )
+
+            with tab3:
+                st.subheader("mapping")
+                st.dataframe(mapping_df, use_container_width=True)
+
+                st.download_button(
+                    label="mapping CSV ダウンロード",
+                    data=mapping_df.to_csv(index=False).encode("utf-8-sig"),
+                    file_name=f"mapping_{sheet_name}.csv",
+                    mime="text/csv"
+                )
+
+            with tab4:
+                st.subheader("代表科目")
+                st.dataframe(rep_df, use_container_width=True)
+
+                st.download_button(
+                    label="代表科目 CSV ダウンロード",
+                    data=rep_df.to_csv(index=False).encode("utf-8-sig"),
+                    file_name=f"representatives_{sheet_name}.csv",
+                    mime="text/csv"
+                )
+
+            with tab5:
+                st.subheader("test case")
+                st.dataframe(test_case_df, use_container_width=True)
+
+                st.download_button(
+                    label="test case CSV ダウンロード",
+                    data=test_case_df.to_csv(index=False).encode("utf-8-sig"),
+                    file_name=f"test_case_{sheet_name}.csv",
+                    mime="text/csv"
+                )
+
+    except Exception as e:
+        st.error(f"処理中にエラーが発生しました: {e}")
