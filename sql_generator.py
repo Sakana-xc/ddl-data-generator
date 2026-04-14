@@ -92,6 +92,8 @@ def normalize_name(name: str) -> str:
 def detect_semantic(name: str) -> str:
     n = normalize_name(name)
 
+    if "FLAG" in n or "FLG" in n:
+        return "FLAG"
     if any(k in n for k in ["年月", "YM"]):
         return "DATE_YM"
     if any(k in n for k in ["日付", "基準日", "対象日", "DATE", "YMD"]):
@@ -118,18 +120,47 @@ def fit_text(s: str, length: int) -> str:
     return s[:length].ljust(min(length, max(1, len(s))), "X")
 
 
+def weighted_choice(items):
+    return random.choice(items)
+
+
+def build_key_token(length: int) -> str:
+    core = "".join(random.choices(string.ascii_uppercase + string.digits, k=max(6, min(length, 12))))
+    return fit_text(core, length)
+
+
+def code_candidates_by_name(name: str):
+    n = normalize_name(name)
+    if any(k in n for k in ["通貨", "CURRENCY"]):
+        return ["JPY", "USD", "EUR", "CNY", "GBP"]
+    if any(k in n for k in ["都市", "CITY"]):
+        return ["JP", "US", "SG", "LON", "NYC", "TKY"]
+    if any(k in n for k in ["国", "COUNTRY"]):
+        return ["JP", "US", "CN", "GB", "DE"]
+    if any(k in n for k in ["法人DM", "HOJINDM"]):
+        return ["JPY", "USD", "EUR"]
+    if any(k in n for k in ["区分", "KBN", "種別"]):
+        return ["01", "02", "03", "10", "99"]
+    return ["A1", "B1", "C1", "01", "02", "JP"]
+
+
 def gen_varchar(col, semantic: str, row_idx: int):
     length = col["length"] or 10
+    name = col["column_name"]
     if semantic == "KEY":
-        return fit_text(f"K{row_idx + 1:0>5}", length)
+        return build_key_token(length)
+    if semantic == "FLAG":
+        return fit_text(weighted_choice(["0", "1"]), length)
     if semantic == "CODE":
-        return fit_text(random.choice(["01", "02", "A1", "JPY", "USD"]), length)
+        return fit_text(weighted_choice(code_candidates_by_name(name)), length)
     if semantic == "DATE_YM":
-        return fit_text("202604", length)
+        yyyymm = (datetime(2025, 1, 1) + timedelta(days=random.randint(0, 540))).strftime("%Y%m")
+        return fit_text(yyyymm, length)
     if semantic == "DATE":
-        return fit_text("20260414", length)
+        yyyymmdd = (datetime(2025, 1, 1) + timedelta(days=random.randint(0, 540))).strftime("%Y%m%d")
+        return fit_text(yyyymmdd, length)
     if semantic == "NAME":
-        return fit_text(random.choice(["TOKYO", "OSAKA", "NAGOYA"]), length)
+        return fit_text(weighted_choice(["TOKYO", "OSAKA", "NAGOYA", "FUKUOKA"]), length)
     return fit_text("".join(random.choices(string.ascii_uppercase, k=min(length, 8))), length)
 
 
@@ -140,11 +171,13 @@ def gen_number(col, semantic: str, row_idx: int):
     max_int = min(10 ** min(int_digits, 9) - 1, 999_999_999)
 
     if semantic == "KEY":
-        base = row_idx + 1
-        return min(base, max_int)
+        return random.randint(max(1, max_int // 20), max_int)
+
+    if semantic == "FLAG":
+        return random.choice([0, 1])
 
     if semantic == "CODE":
-        return random.choice([1, 2, 3, 9])
+        return random.choice([1, 2, 3, 8, 9, 10, 20])
 
     if semantic == "AMOUNT":
         int_val = random.randint(1_000, min(max_int, 9_999_999))
@@ -220,7 +253,7 @@ def build_field_value_text(df: pd.DataFrame, cols):
     col_names = [c["column_name"] for c in cols]
     blocks = []
     for i, row in df.iterrows():
-        lines = [f"{c}: {row[c]}" for c in col_names]
+        lines = [f"{c}\t{row[c]}" for c in col_names]
         blocks.append(f"[ROW {i+1}]\n" + "\n".join(lines))
     return "\n\n".join(blocks)
 
@@ -244,5 +277,5 @@ if st.button("正常データ生成", type="primary"):
     st.code(sql, language="sql")
 
     field_value_text = build_field_value_text(df, cols)
-    st.subheader("科目: 値（コピー用）")
+    st.subheader("科目\t値（コピー用）")
     st.text_area("コピーして使う", field_value_text, height=260)
