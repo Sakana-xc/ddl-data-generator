@@ -13,6 +13,17 @@ COL_LENGTH = "Length"
 COL_SCREEN = "画面表示項目"
 COL_REQUIRED = "必須チェック"
 
+# 代表科目の優先種別（テスト方針）
+REPRESENTATIVE_RULE_ORDER = [
+    "短文字",
+    "長文字",
+    "コード値",
+    "年月日付",
+    "金額",
+    "長数字",
+    "短数字",
+]
+
 
 # =========================================
 # 共通関数
@@ -408,8 +419,9 @@ def build_subject_summary(sheet_name: str, work_df: pd.DataFrame):
 
 def build_mapping_df(sheet_name: str, summary_df: pd.DataFrame, config_items: list, rule_dict_map: dict):
     rows = []
+    ordered_summary = summary_df.sort_values(by=["No"]).reset_index(drop=True)
 
-    for _, r in summary_df.iterrows():
+    for _, r in ordered_summary.iterrows():
         idx = r["No"]
         item_name = r["補正項目名"]
         screen_excel = r["画面表示"]
@@ -446,7 +458,10 @@ def build_mapping_df(sheet_name: str, summary_df: pd.DataFrame, config_items: li
             "mapping結果": mapping_result,
         })
 
-    return pd.DataFrame(rows)
+    mapping_df = pd.DataFrame(rows)
+    if not mapping_df.empty:
+        mapping_df = mapping_df.sort_values(by=["No"]).reset_index(drop=True)
+    return mapping_df
 
 
 # =========================================
@@ -475,9 +490,16 @@ def choose_representatives(summary_df: pd.DataFrame):
     work = work.sort_values(by=["rule種別", "_screen_priority", "_required_priority", "No"])
     rep_df = work.groupby("rule種別", as_index=False).first()
 
-    # 代表科目は約10件に収める
-    rep_df = rep_df.sort_values(by=["_screen_priority", "_required_priority", "No"]).head(10)
-    return rep_df.drop(columns=["_screen_priority", "_required_priority"], errors="ignore")
+    # テスト方針の代表種別を優先して並べる
+    rep_df["_rule_priority"] = rep_df["rule種別"].apply(
+        lambda x: REPRESENTATIVE_RULE_ORDER.index(x)
+        if x in REPRESENTATIVE_RULE_ORDER
+        else len(REPRESENTATIVE_RULE_ORDER) + 99
+    )
+
+    rep_df = rep_df.sort_values(by=["_rule_priority", "_screen_priority", "_required_priority", "No"])
+    rep_df = rep_df.head(10)
+    return rep_df.drop(columns=["_screen_priority", "_required_priority", "_rule_priority"], errors="ignore")
 
 
 # =========================================
