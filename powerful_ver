@@ -13,17 +13,6 @@ COL_LENGTH = "Length"
 COL_SCREEN = "画面表示項目"
 COL_REQUIRED = "必須チェック"
 
-# 代表科目の優先種別（テスト方針）
-REPRESENTATIVE_RULE_ORDER = [
-    "短文字",
-    "長文字",
-    "コード値",
-    "年月日付",
-    "金額",
-    "長数字",
-    "短数字",
-]
-
 
 # =========================================
 # 共通関数
@@ -111,11 +100,6 @@ def py_escape(s: str) -> str:
     return s.replace("\\", "\\\\").replace('"', '\\"')
 
 
-def normalize_name_for_detection(name: str) -> str:
-    """科目名判定用に空白を除去"""
-    return normalize_text(name).replace("　", "").replace(" ", "").upper()
-
-
 def validate_required_columns(df: pd.DataFrame):
     """必要列チェック"""
     required_cols = [COL_ITEM_NAME, COL_ATTR, COL_LENGTH, COL_SCREEN, COL_REQUIRED]
@@ -199,15 +183,12 @@ def df_to_validation_code(sheet_name: str, df: pd.DataFrame):
         if normalize_mark(row.get(COL_SCREEN, None)):
             config_items.append(str(row[COL_ITEM_NAME]).strip())
 
-    # validation_rule（画面表示項目のみ）
+    # validation_rule
     rule_lines = []
     todo_list = []
     rule_dict_map = {}
 
     for idx, row in work_df.iterrows():
-        if not normalize_mark(row.get(COL_SCREEN, None)):
-            continue
-
         item_name = str(row[COL_ITEM_NAME]).strip()
         rule, todos = build_rule_dict(row)
         rule_dict_map[idx] = rule
@@ -268,124 +249,39 @@ def df_to_validation_code(sheet_name: str, df: pd.DataFrame):
 # 科目汇总 / 分类
 # =========================================
 
-def is_date_like_subject(item_name: str) -> bool:
-    """
-    属性に日付が無いケース向け：
-    科目名から日付系を判定する
-    """
-    n = normalize_name_for_detection(item_name)
-    # 「年」「月」「日」の単独文字は誤判定が多いため使わない
-    keywords = [
-        "年月",
-        "基準日",
-        "対象日",
-        "日付",
-        "計上日",
-        "更新日",
-        "作成日",
-        "決済日",
-        "償還日",
-        "DATE",
-        "DT",
-        "YM",
-        "YMD",
-    ]
-    return any(k in n for k in keywords)
-
-
-def detect_name_semantic(item_name: str) -> str:
-    """
-    科目名の意味判定
-    - amount: 金額系
-    - code: コード/区分系
-    - date: 日付系
-    - normal
-    """
-    n = normalize_name_for_detection(item_name)
-
-    if is_date_like_subject(item_name):
-        return "date"
-
-    amount_keywords = [
-        "金額",
-        "残高",
-        "簿価",
-        "価格",
-        "価額",
-        "利息",
-        "手数料",
-        "元本",
-        "税額",
-        "額面",
-    ]
-    if any(k in n for k in amount_keywords):
-        return "amount"
-
-    code_keywords = [
-        "区分",
-        "種別",
-        "コード",
-        "CD",
-        "KBN",
-        "フラグ",
-        "通貨",
-        "分類",
-    ]
-    if any(k in n for k in code_keywords):
-        return "code"
-
-    return "normal"
-
-
-def classify_rule_type(item_name, attr, length_val):
+def classify_rule_type(attr, length_val):
     """
     字段分类：
-    - 短文字 / 長文字
-    - 短数字 / 長数字
-    - 小数(短) / 小数(長)
-    - 年月日付 / 日付
-    - 不明
+    - text_short
+    - text_middle
+    - text_long
+    - number_int
+    - number_decimal
+    - unknown
     """
     attr = normalize_attr(attr)
-    item_name = normalize_text(item_name)
-    semantic = detect_name_semantic(item_name)
-
-    if semantic == "date":
-        n = normalize_name_for_detection(item_name)
-        if "YM" in n or "年月" in n or ("年" in n and "月" in n and "日" not in n):
-            return "年月日付"
-        return "日付"
 
     if is_text_attr(attr):
-        if semantic == "code":
-            return "コード値"
         ln = parse_length_for_text(length_val)
         if ln is None:
-            return "文字(長さ不明)"
-        if ln <= 10:
-            return "短文字"
-        return "長文字"
+            return "text_unknown"
+        if ln == 1:
+            return "text_short"
+        elif ln <= 20:
+            return "text_middle"
+        else:
+            return "text_long"
 
     if is_number_attr(attr):
         parsed = parse_length_for_number(length_val)
         if parsed is None:
-            return "数字(長さ不明)"
+            return "number_unknown"
         p, s = parsed
-
-        if semantic == "amount":
-            return "金額"
-        if semantic == "code":
-            return "コード値"
-
         if s == 0:
-            if p <= 9:
-                return "短数字"
-            return "長数字"
-        if p <= 9:
-            return "小数(短)"
-        return "小数(長)"
+            return "number_int"
+        return "number_decimal"
 
-    return "不明"
+    return "unknown"
 
 
 def build_subject_summary(sheet_name: str, work_df: pd.DataFrame):
@@ -397,7 +293,7 @@ def build_subject_summary(sheet_name: str, work_df: pd.DataFrame):
         length_val = normalize_text(row.get(COL_LENGTH))
         screen = normalize_mark(row.get(COL_SCREEN))
         required = normalize_mark(row.get(COL_REQUIRED))
-        rule_type = classify_rule_type(item_name, attr, row.get(COL_LENGTH))
+        rule_type = classify_rule_type(attr, row.get(COL_LENGTH))
 
         rows.append({
             "Sheet名": sheet_name,
@@ -410,10 +306,7 @@ def build_subject_summary(sheet_name: str, work_df: pd.DataFrame):
             "rule種別": rule_type,
         })
 
-    summary_df = pd.DataFrame(rows)
-    if not summary_df.empty:
-        summary_df = summary_df.sort_values(by=["rule種別", "No"]).reset_index(drop=True)
-    return summary_df
+    return pd.DataFrame(rows)
 
 
 # =========================================
@@ -422,9 +315,8 @@ def build_subject_summary(sheet_name: str, work_df: pd.DataFrame):
 
 def build_mapping_df(sheet_name: str, summary_df: pd.DataFrame, config_items: list, rule_dict_map: dict):
     rows = []
-    ordered_summary = summary_df.sort_values(by=["No"]).reset_index(drop=True)
 
-    for _, r in ordered_summary.iterrows():
+    for _, r in summary_df.iterrows():
         idx = r["No"]
         item_name = r["補正項目名"]
         screen_excel = r["画面表示"]
@@ -432,15 +324,15 @@ def build_mapping_df(sheet_name: str, summary_df: pd.DataFrame, config_items: li
         attr = r["属性"]
         length_val = r["Length"]
 
+        expected_rule, _ = build_rule_dict(pd.Series({
+            COL_ATTR: attr,
+            COL_LENGTH: length_val,
+            COL_REQUIRED: "〇" if required_excel else ""
+        }))
+
         actual_rule = rule_dict_map.get(idx, {})
+
         config_target = item_name in config_items
-        expected_rule = {}
-        if screen_excel:
-            expected_rule, _ = build_rule_dict(pd.Series({
-                COL_ATTR: attr,
-                COL_LENGTH: length_val,
-                COL_REQUIRED: "〇" if required_excel else ""
-            }))
 
         mapping_result = "OK"
         if config_target != screen_excel:
@@ -461,10 +353,7 @@ def build_mapping_df(sheet_name: str, summary_df: pd.DataFrame, config_items: li
             "mapping結果": mapping_result,
         })
 
-    mapping_df = pd.DataFrame(rows)
-    if not mapping_df.empty:
-        mapping_df = mapping_df.sort_values(by=["No"]).reset_index(drop=True)
-    return mapping_df
+    return pd.DataFrame(rows)
 
 
 # =========================================
@@ -482,27 +371,14 @@ def choose_representatives(summary_df: pd.DataFrame):
     if summary_df.empty:
         return pd.DataFrame()
 
-    # テスト対象は画面表示項目のみ
-    work = summary_df[summary_df["画面表示"] == True].copy()
-    if work.empty:
-        return pd.DataFrame()
-
+    work = summary_df.copy()
     work["_screen_priority"] = work["画面表示"].apply(lambda x: 0 if x else 1)
     work["_required_priority"] = work["必須"].apply(lambda x: 0 if x else 1)
 
     work = work.sort_values(by=["rule種別", "_screen_priority", "_required_priority", "No"])
     rep_df = work.groupby("rule種別", as_index=False).first()
 
-    # テスト方針の代表種別を優先して並べる
-    rep_df["_rule_priority"] = rep_df["rule種別"].apply(
-        lambda x: REPRESENTATIVE_RULE_ORDER.index(x)
-        if x in REPRESENTATIVE_RULE_ORDER
-        else len(REPRESENTATIVE_RULE_ORDER) + 99
-    )
-
-    rep_df = rep_df.sort_values(by=["_rule_priority", "_screen_priority", "_required_priority", "No"])
-    rep_df = rep_df.head(10)
-    return rep_df.drop(columns=["_screen_priority", "_required_priority", "_rule_priority"], errors="ignore")
+    return rep_df.drop(columns=["_screen_priority", "_required_priority"], errors="ignore")
 
 
 # =========================================
@@ -511,119 +387,147 @@ def choose_representatives(summary_df: pd.DataFrame):
 
 def build_test_case_df(sheet_name: str, rep_df: pd.DataFrame):
     rows = []
-
-    def add_case(item, cls, point, content, value, expected):
-        rows.append({
-            "No": 0,
-            "Sheet名": sheet_name,
-            "代表科目": item,
-            "分類": cls,
-            "観点": point,
-            "テスト内容": content,
-            "入力値": value,
-            "期待結果": expected,
-        })
-
-    def mixed_error_pair(rule_type):
-        return {
-            "短文字": ("'X'*999", "桁数異常"),
-            "長文字": ("'X'*999", "桁数異常"),
-            "文字(長さ不明)": ("'X'*999", "桁数異常"),
-            "短数字": ("'ABC'", "型異常"),
-            "長数字": ("'ABC'", "型異常"),
-            "小数(短)": ("'1.234567890123'", "小数桁異常"),
-            "小数(長)": ("'1.234567890123'", "小数桁異常"),
-            "金額": ("'1.234567890123'", "小数桁異常"),
-            "コード値": ("'ZZ'", "コード値異常"),
-            "年月日付": ("'2026/04'", "形式異常"),
-            "日付": ("'20260230'", "形式異常"),
-        }.get(rule_type, ("'@@@'", "入力異常"))
+    no = 1
 
     for _, r in rep_df.iterrows():
-        item = r["補正項目名"]
+        item_name = r["補正項目名"]
         rule_type = r["rule種別"]
+        required = r["必須"]
         length_val = r["Length"]
 
-        if r["必須"]:
-            add_case(item, rule_type, "必須", "未入力で登録する", "NULL", "必須エラーとなること")
+        # 必須
+        if required:
+            rows.append({
+                "No": no,
+                "Sheet名": sheet_name,
+                "代表科目": item_name,
+                "分類": rule_type,
+                "観点": "必須",
+                "テスト内容": "未入力で登録する",
+                "入力値": "NULL",
+                "期待結果": "必須エラーとなること",
+            })
+            no += 1
 
-        if rule_type in {"短文字", "長文字", "文字(長さ不明)"}:
-            ln = int(length_val) if str(length_val).isdigit() else None
+        # text
+        if rule_type in {"text_short", "text_middle", "text_long", "text_unknown"}:
+            ln = None
+            try:
+                ln = int(length_val)
+            except Exception:
+                ln = None
+
             if ln:
-                add_case(item, rule_type, "桁数正常", "最大桁数ちょうどで入力する", "A" * ln, "正常に登録できること")
-                add_case(item, rule_type, "桁数異常", "最大桁数超過で入力する", "B" * (ln + 1), "桁数エラーとなること")
-            continue
+                rows.append({
+                    "No": no,
+                    "Sheet名": sheet_name,
+                    "代表科目": item_name,
+                    "分類": rule_type,
+                    "観点": "桁数正常",
+                    "テスト内容": "最大桁数ちょうどで入力する",
+                    "入力値": f"{ln}桁文字列",
+                    "期待結果": "正常に登録できること",
+                })
+                no += 1
 
-        if rule_type in {"短数字", "長数字"}:
+                rows.append({
+                    "No": no,
+                    "Sheet名": sheet_name,
+                    "代表科目": item_name,
+                    "分類": rule_type,
+                    "観点": "桁数異常",
+                    "テスト内容": "最大桁数超過で入力する",
+                    "入力値": f"{ln + 1}桁文字列",
+                    "期待結果": "桁数エラーとなること",
+                })
+                no += 1
+
+        # integer
+        elif rule_type == "number_int":
             parsed = parse_length_for_number(length_val)
-            add_case(item, rule_type, "正常", "正常な整数値を入力する", 123, "正常に登録できること")
-            add_case(item, rule_type, "型異常", "非数字を入力する", "ABC", "型エラーとなること")
-            if parsed:
-                add_case(item, rule_type, "桁数異常", "整数桁数超過で入力する", int("9" * min(parsed[0] + 1, 18)), "common check エラーとなること")
-            continue
+            p = parsed[0] if parsed else None
 
-        if rule_type in {"小数(短)", "小数(長)", "金額"}:
+            rows.append({
+                "No": no,
+                "Sheet名": sheet_name,
+                "代表科目": item_name,
+                "分類": rule_type,
+                "観点": "正常",
+                "テスト内容": "正常な整数値を入力する",
+                "入力値": "123",
+                "期待結果": "正常に登録できること",
+            })
+            no += 1
+
+            rows.append({
+                "No": no,
+                "Sheet名": sheet_name,
+                "代表科目": item_name,
+                "分類": rule_type,
+                "観点": "型異常",
+                "テスト内容": "非数字を入力する",
+                "入力値": "ABC",
+                "期待結果": "型エラーとなること",
+            })
+            no += 1
+
+            if p:
+                rows.append({
+                    "No": no,
+                    "Sheet名": sheet_name,
+                    "代表科目": item_name,
+                    "分類": rule_type,
+                    "観点": "桁数異常",
+                    "テスト内容": "整数桁数超過で入力する",
+                    "入力値": f"{p + 1}桁数値",
+                    "期待結果": "common check エラーとなること",
+                })
+                no += 1
+
+        # decimal
+        elif rule_type == "number_decimal":
             parsed = parse_length_for_number(length_val)
-            s = parsed[1] if parsed else 2
-            add_case(item, rule_type, "正常", "正常な小数値を入力する", f"1.{('2' * s) if s > 0 else '0'}", "正常に登録できること")
-            add_case(item, rule_type, "型異常", "非数字を入力する", "ABC", "型エラーとなること")
-            add_case(item, rule_type, "小数桁異常", "小数桁数超過で入力する", f"1.{'2' * (s + 1)}", "common check エラーとなること")
-            continue
+            p = parsed[0] if parsed else None
+            s = parsed[1] if parsed else None
 
-        if rule_type == "コード値":
-            add_case(item, rule_type, "正常", "定義済みコード値を入力する", "01", "正常に登録できること")
-            add_case(item, rule_type, "形式異常", "未定義コード値を入力する", "ZZ", "コード値エラーとなること")
-            continue
+            rows.append({
+                "No": no,
+                "Sheet名": sheet_name,
+                "代表科目": item_name,
+                "分類": rule_type,
+                "観点": "正常",
+                "テスト内容": "正常な小数値を入力する",
+                "入力値": "123.45",
+                "期待結果": "正常に登録できること",
+            })
+            no += 1
 
-        if rule_type == "年月日付":
-            add_case(item, rule_type, "正常", "YYYYMM形式で入力する", "202604", "正常に登録できること")
-            add_case(item, rule_type, "形式異常", "YYYYMM以外を入力する", "2026/04", "形式エラーとなること")
-            continue
+            rows.append({
+                "No": no,
+                "Sheet名": sheet_name,
+                "代表科目": item_name,
+                "分類": rule_type,
+                "観点": "型異常",
+                "テスト内容": "非数字を入力する",
+                "入力値": "ABC",
+                "期待結果": "型エラーとなること",
+            })
+            no += 1
 
-        if rule_type == "日付":
-            add_case(item, rule_type, "正常", "YYYYMMDD形式で入力する", "20260410", "正常に登録できること")
-            add_case(item, rule_type, "形式異常", "日付不正を入力する", "20260230", "形式エラーとなること")
+            if s is not None:
+                rows.append({
+                    "No": no,
+                    "Sheet名": sheet_name,
+                    "代表科目": item_name,
+                    "分類": rule_type,
+                    "観点": "小数桁異常",
+                    "テスト内容": "小数桁数超過で入力する",
+                    "入力値": f"小数{s + 1}桁数値",
+                    "期待結果": "common check エラーとなること",
+                })
+                no += 1
 
-    if len(rep_df) >= 2:
-        a, b = list(rep_df["補正項目名"].head(2))
-        target = f"{a} / {b}"
-        add_case(target, "複合", "複数科目異常", "2科目同時に必須違反", f"{a}='', {b}=''", "2科目とも必須エラーとなること")
-        add_case(target, "複合", "複数科目異常", "2科目同時に形式/型違反", f"{a}='@@@', {b}='ABC'", "2科目とも入力形式エラーとなること")
-
-    if not rep_df.empty:
-        all_items = list(rep_df["補正項目名"])
-        item_text = " / ".join(all_items)
-        req_values = [f"{n}=''" for n in all_items]
-        req_errors = [f"{n}:必須" for n in all_items]
-        mix_values, mix_errors = [], []
-        for _, rr in rep_df.iterrows():
-            bad_val, bad_err = mixed_error_pair(rr["rule種別"])
-            mix_values.append(f"{rr['補正項目名']}={bad_val}")
-            mix_errors.append(f"{rr['補正項目名']}:{bad_err}")
-
-        add_case(item_text, "複合", "全代表科目異常", "全代表科目を未入力で同時登録する", ", ".join(req_values), " / ".join(req_errors))
-        add_case(item_text, "複合", "全代表科目異常", "全代表科目に種別別の異常値を同時入力する", ", ".join(mix_values), " / ".join(mix_errors))
-
-    # ケース件数は上限で切らず、生成した内容をそのまま出力
-    case_df = pd.DataFrame(rows)
-    if not case_df.empty:
-        point_order = {
-            "必須": 1,
-            "正常": 2,
-            "桁数正常": 3,
-            "桁数異常": 4,
-            "型異常": 5,
-            "小数桁異常": 6,
-            "形式異常": 7,
-            "複数科目異常": 8,
-            "全代表科目異常": 9,
-        }
-        case_df["_point_order"] = case_df["観点"].map(point_order).fillna(99)
-        case_df = case_df.sort_values(by=["_point_order", "分類", "代表科目"]).drop(columns=["_point_order"])
-
-    case_df["No"] = range(1, len(case_df) + 1)
-
-    return case_df
+    return pd.DataFrame(rows)
 
 
 # =========================================
