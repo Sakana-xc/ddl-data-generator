@@ -8,25 +8,16 @@ import pandas as pd
 import streamlit as st
 
 
-# =========================================
-# DDL解析
-# =========================================
-
 def extract_table_name(ddl: str) -> str:
-    """テーブル名取得"""
     m = re.search(r"CREATE\s+(?:OR\s+REPLACE\s+)?TABLE\s+([^\s(]+)", ddl, re.I)
     return m.group(1) if m else "TARGET_TABLE"
 
 
 def extract_columns(ddl: str):
-    """カラム定義抽出"""
     start = ddl.find("(")
     end = ddl.rfind(")")
     block = ddl[start + 1:end]
-
-    cols = []
-    level = 0
-    buf = []
+    cols, buf, level = [], [], 0
 
     for ch in block:
         if ch == "(":
@@ -42,12 +33,10 @@ def extract_columns(ddl: str):
 
     if buf:
         cols.append("".join(buf).strip())
-
     return cols
 
 
 def parse_column(line: str):
-    """カラム解析（簡易版）"""
     pattern = re.compile(
         r"""
         (?P<col>\w+)\s+
@@ -59,29 +48,22 @@ def parse_column(line: str):
         """,
         re.I | re.X,
     )
-
     m = pattern.search(line)
     if not m:
         return None
 
     col = m.group("col")
     dtype = m.group("type").upper()
-
-    length = None
-    precision = None
-    scale = None
-    ts_scale = None
+    length = precision = scale = ts_scale = None
 
     if dtype.startswith("VARCHAR"):
         length = int(re.findall(r"\d+", dtype)[0])
-
     elif dtype.startswith("NUMBER"):
         nums = re.findall(r"\d+", dtype)
         if len(nums) >= 1:
             precision = int(nums[0])
         if len(nums) >= 2:
             scale = int(nums[1])
-
     elif dtype.startswith("TIMESTAMP_NTZ"):
         nums = re.findall(r"\d+", dtype)
         if nums:
@@ -99,141 +81,120 @@ def parse_column(line: str):
 
 def parse_ddl(ddl: str):
     table = extract_table_name(ddl)
-    lines = extract_columns(ddl)
-
-    cols = []
-    for l in lines:
-        c = parse_column(l)
-        if c:
-            cols.append(c)
-
+    cols = [c for c in (parse_column(l) for l in extract_columns(ddl)) if c]
     return table, cols
 
 
-# =========================================
-# 列名ルール
-# =========================================
+def normalize_name(name: str) -> str:
+    return str(name).upper().replace("_", "").replace(" ", "").replace("　", "")
 
-def detect_type(name: str):
-    n = name.upper()
 
-    if "YM" in n:
-        return "YM"
-    if "ID" in n or "NO" in n:
-        return "ID"
-    if "NAME" in n:
-        return "NAME"
-    if "CODE" in n:
+def detect_semantic(name: str) -> str:
+    n = normalize_name(name)
+
+    if any(k in n for k in ["年月", "YM"]):
+        return "DATE_YM"
+    if any(k in n for k in ["日付", "基準日", "対象日", "DATE", "YMD"]):
+        return "DATE"
+    if any(k in n for k in ["TIMESTAMP", "UPDATETS", "CREATETS"]):
+        return "DATE_TIME"
+
+    if any(k in n for k in ["ID", "KEY", "NO", "SEQ", "番号"]):
+        return "KEY"
+    if any(k in n for k in ["CODE", "CD", "KBN", "区分", "種別", "通貨"]):
         return "CODE"
-    if "KBN" in n or "STATUS" in n:
-        return "KBN"
-    if "AMOUNT" in n:
+    if any(k in n for k in ["AMOUNT", "金額", "残高", "額面", "利息"]):
         return "AMOUNT"
+    if any(k in n for k in ["RATE", "利率", "パーセント"]):
+        return "RATE"
+    if any(k in n for k in ["NAME", "名称", "名"]):
+        return "NAME"
     return "NORMAL"
 
 
-# =========================================
-# 生成ロジック
-# =========================================
+def fit_text(s: str, length: int) -> str:
+    if length is None:
+        return s
+    return s[:length].ljust(min(length, max(1, len(s))), "X")
 
-def gen_varchar(col, mode, semantic):
+
+def gen_varchar(col, semantic: str, row_idx: int):
     length = col["length"] or 10
-
-    if semantic == "NAME":
-        return random.choice(["TARO", "HANAKO", "SATO"])[:length]
-
+    if semantic == "KEY":
+        return fit_text(f"K{row_idx + 1:0>5}", length)
     if semantic == "CODE":
-        return f"A{random.randint(1,9999):04d}"[:length]
+        return fit_text(random.choice(["01", "02", "A1", "JPY", "USD"]), length)
+    if semantic == "DATE_YM":
+        return fit_text("202604", length)
+    if semantic == "DATE":
+        return fit_text("20260414", length)
+    if semantic == "NAME":
+        return fit_text(random.choice(["TOKYO", "OSAKA", "NAGOYA"]), length)
+    return fit_text("".join(random.choices(string.ascii_uppercase, k=min(length, 8))), length)
 
-    if mode == "min":
-        return "A"
-    if mode == "max":
-        return "Z" * length
 
-    return "".join(random.choices(string.ascii_uppercase, k=min(length, 10)))
-
-
-def gen_number(col, mode, semantic):
+def gen_number(col, semantic: str, row_idx: int):
     p = col["precision"] or 10
     s = col["scale"] or 0
-
     int_digits = max(1, p - s)
-
-    # ========= 最大位数 =========
-    if mode == "max":
-        int_part = "9" * int_digits
-        if s == 0:
-            return int(int_part)
-        frac = "9" * s
-        return Decimal(f"{int_part}.{frac}")
-
-    # ========= 最小位数 =========
-    if mode == "min":
-        # 最小“有效位数”
-        if s == 0:
-            return 1
-        return Decimal("1." + "0" * s)
-
-    # ========= 随机 =========
     max_int = min(10 ** min(int_digits, 9) - 1, 999_999_999)
 
-    val = random.randint(1, max_int)
+    if semantic == "KEY":
+        base = row_idx + 1
+        return min(base, max_int)
 
+    if semantic == "CODE":
+        return random.choice([1, 2, 3, 9])
+
+    if semantic == "AMOUNT":
+        int_val = random.randint(1_000, min(max_int, 9_999_999))
+        if s == 0:
+            return int_val
+        frac = random.randint(0, 10**s - 1 if s <= 6 else 999999)
+        return Decimal(f"{int_val}.{str(frac).zfill(s)}")
+
+    if semantic == "RATE":
+        if s == 0:
+            return random.randint(1, min(max_int, 100))
+        frac = random.randint(0, 10**s - 1 if s <= 6 else 999999)
+        return Decimal(f"{random.randint(0, 99)}.{str(frac).zfill(s)}")
+
+    val = random.randint(1, max_int)
     if s == 0:
         return val
-
-    frac = random.randint(0, 10**s - 1 if s < 6 else 999999)
+    frac = random.randint(0, 10**s - 1 if s <= 6 else 999999)
     return Decimal(f"{val}.{str(frac).zfill(s)}")
 
-def gen_timestamp(col, mode):
-    scale = col["ts_scale"]
 
-    if mode == "min":
-        dt = datetime(1900, 1, 1)
-    elif mode == "max":
-        dt = datetime(2099, 12, 31, 23, 59, 59, 999999)
+def gen_timestamp(col, semantic: str):
+    base = datetime(2026, 4, 1, 9, 0, 0)
+    if semantic in {"DATE", "DATE_YM"}:
+        dt = datetime(2026, 4, 14, 0, 0, 0)
     else:
-        dt = datetime(2000, 1, 1) + timedelta(seconds=random.randint(0, 1_000_000_000))
+        dt = base + timedelta(minutes=random.randint(0, 20_000))
 
-    if not scale:
+    scale = col["ts_scale"] or 0
+    if scale <= 0:
         return dt.strftime("%Y-%m-%d %H:%M:%S")
-
     micro = str(dt.microsecond).zfill(6)[:scale]
     return dt.strftime("%Y-%m-%d %H:%M:%S") + "." + micro
 
 
-def gen_value(col, mode):
-    semantic = detect_type(col["column_name"])
+def gen_value(col, row_idx: int):
+    semantic = detect_semantic(col["column_name"])
     dtype = col["data_type"]
-
     if dtype.startswith("VARCHAR"):
-        return gen_varchar(col, mode, semantic)
-
+        return gen_varchar(col, semantic, row_idx)
     if dtype.startswith("NUMBER"):
-        return gen_number(col, mode, semantic)
-
+        return gen_number(col, semantic, row_idx)
     if dtype.startswith("TIMESTAMP_NTZ"):
-        return gen_timestamp(col, mode)
+        return gen_timestamp(col, semantic)
+    return None
 
 
-def gen_rows(cols, n):
-    rows = []
+def gen_rows(cols, n: int):
+    return pd.DataFrame([{c["column_name"]: gen_value(c, i) for c in cols} for i in range(n)])
 
-    rows.append({"_pattern": "MIN", **{c["column_name"]: gen_value(c, "min") for c in cols}})
-    rows.append({"_pattern": "MAX", **{c["column_name"]: gen_value(c, "max") for c in cols}})
-
-    for i in range(n):
-        rows.append({
-            "_pattern": f"RANDOM_{i+1}",
-            **{c["column_name"]: gen_value(c, "random") for c in cols}
-        })
-
-    return pd.DataFrame(rows)
-
-
-# =========================================
-# SQL生成
-# =========================================
 
 def to_sql(v):
     if isinstance(v, str):
@@ -243,91 +204,45 @@ def to_sql(v):
 
 def build_sql(table, cols, df):
     col_names = [c["column_name"] for c in cols]
-
     values = []
     for _, r in df.iterrows():
         vals = [to_sql(r[c]) for c in col_names]
         values.append("(" + ", ".join(vals) + ")")
-
+    values_sql = ",\n".join(values)
     return f"""INSERT INTO {table} (
     {", ".join(col_names)}
 )
 VALUES
-{",\n".join(values)};"""
+{values_sql};"""
 
 
-# =========================================
-# UI
-# =========================================
-
-st.title("DDL テストデータ生成")
-
-ddl = st.text_area("DDL", height=200)
-
-
-random_count = st.number_input("ランダム件数", 1, 1000, 5)
+def build_field_value_text(df: pd.DataFrame, cols):
+    col_names = [c["column_name"] for c in cols]
+    blocks = []
+    for i, row in df.iterrows():
+        lines = [f"{c}: {row[c]}" for c in col_names]
+        blocks.append(f"[ROW {i+1}]\n" + "\n".join(lines))
+    return "\n\n".join(blocks)
 
 
-col1, col2, col3 = st.columns(3)
+st.title("DDL 実務寄りテストデータ生成（正常データのみ）")
+ddl = st.text_area("DDL", height=220)
+row_count = st.number_input("生成件数（1〜10）", min_value=1, max_value=10, value=5, step=1)
 
-with col1:
-    btn_min = st.button("最小値生成")
-
-with col2:
-    btn_max = st.button("最大値生成")
-
-with col3:
-    btn_rand = st.button("ランダム生成")
-
-
-if btn_min or btn_max or btn_rand:
+if st.button("正常データ生成", type="primary"):
     table, cols = parse_ddl(ddl)
-
     if not cols:
         st.error("DDL解析失敗")
         st.stop()
 
-    rows = []
-
-    # =========================
-    # 最小
-    # =========================
-    if btn_min:
-        row = {c["column_name"]: gen_value(c, "min") for c in cols}
-        row["_pattern"] = "MIN"
-        rows.append(row)
-
-    # =========================
-    # 最大
-    # =========================
-    if btn_max:
-        row = {c["column_name"]: gen_value(c, "max") for c in cols}
-        row["_pattern"] = "MAX"
-        rows.append(row)
-
-    # =========================
-    # 随机
-    # =========================
-    if btn_rand:
-        for i in range(random_count):
-            row = {c["column_name"]: gen_value(c, "random") for c in cols}
-            row["_pattern"] = f"RANDOM_{i+1}"
-            rows.append(row)
-
-    df = pd.DataFrame(rows)
-
+    df = gen_rows(cols, int(row_count))
     st.subheader("生成結果")
     st.dataframe(df, use_container_width=True)
 
-    # =========================
-    # SQL生成
-    # =========================
-    sql = build_sql(table, cols, df.drop(columns=["_pattern"]))
-
+    sql = build_sql(table, cols, df)
     st.subheader("INSERT SQL")
     st.code(sql, language="sql")
-    st.dataframe(df)
 
-    sql = build_sql(table, cols, df.drop(columns=["_pattern"]))
-
-    st.code(sql, language="sql")
+    field_value_text = build_field_value_text(df, cols)
+    st.subheader("科目: 値（コピー用）")
+    st.text_area("コピーして使う", field_value_text, height=260)
