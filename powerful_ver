@@ -385,16 +385,6 @@ def choose_representatives(summary_df: pd.DataFrame):
 # test case
 # =========================================
 
-def detect_business_check_type(item_name: str) -> str:
-    n = normalize_text(item_name).upper().replace("_", "").replace(" ", "").replace("　", "")
-    if any(k in n for k in ["年月", "基準日", "対象日", "日付", "DATE", "YMD", "YM"]):
-        return "DATE"
-    if any(k in n for k in ["CODE", "CD", "KBN", "区分", "種別", "通貨"]):
-        return "CODE"
-    if any(k in n for k in ["金額", "残高", "額面", "AMOUNT", "利息", "RATE", "利率"]):
-        return "AMOUNT"
-    return "NORMAL"
-
 
 def build_text_value(ch: str, ln: int) -> str:
     return ch * max(1, ln)
@@ -409,7 +399,6 @@ def build_test_case_df(sheet_name: str, rep_df: pd.DataFrame):
         rule_type = r["rule種別"]
         required = r["必須"]
         length_val = r["Length"]
-        business_type = detect_business_check_type(item_name)
 
         # 必須
         if required:
@@ -439,6 +428,18 @@ def build_test_case_df(sheet_name: str, rep_df: pd.DataFrame):
                     "Sheet名": sheet_name,
                     "代表科目": item_name,
                     "分類": rule_type,
+                    "観点": "最小入力",
+                    "テスト内容": "1文字で入力する",
+                    "入力値": "A",
+                    "期待結果": "正常に登録できること",
+                })
+                no += 1
+
+                rows.append({
+                    "No": no,
+                    "Sheet名": sheet_name,
+                    "代表科目": item_name,
+                    "分類": rule_type,
                     "観点": "桁数正常",
                     "テスト内容": "最大桁数ちょうどで入力する",
                     "入力値": build_text_value("A", ln),
@@ -455,68 +456,6 @@ def build_test_case_df(sheet_name: str, rep_df: pd.DataFrame):
                     "テスト内容": "最大桁数超過で入力する",
                     "入力値": build_text_value("B", ln + 1),
                     "期待結果": "桁数エラーとなること",
-                })
-                no += 1
-
-            if business_type == "DATE":
-                rows.append({
-                    "No": no,
-                    "Sheet名": sheet_name,
-                    "代表科目": item_name,
-                    "分類": rule_type,
-                    "観点": "日付形式正常",
-                    "テスト内容": "業務で想定する日付形式を入力する",
-                    "入力値": "20260415",
-                    "期待結果": "正常に登録できること",
-                })
-                no += 1
-
-                rows.append({
-                    "No": no,
-                    "Sheet名": sheet_name,
-                    "代表科目": item_name,
-                    "分類": rule_type,
-                    "観点": "非日付",
-                    "テスト内容": "日付項目に非日付文字を入力する",
-                    "入力値": "20AB0415",
-                    "期待結果": "日付形式エラーとなること",
-                })
-                no += 1
-
-                rows.append({
-                    "No": no,
-                    "Sheet名": sheet_name,
-                    "代表科目": item_name,
-                    "分類": rule_type,
-                    "観点": "日付実在性",
-                    "テスト内容": "存在しない日付を入力する",
-                    "入力値": "20260230",
-                    "期待結果": "日付妥当性エラーとなること",
-                })
-                no += 1
-
-            if business_type == "CODE":
-                rows.append({
-                    "No": no,
-                    "Sheet名": sheet_name,
-                    "代表科目": item_name,
-                    "分類": rule_type,
-                    "観点": "コード定義内",
-                    "テスト内容": "定義済みコードを入力する",
-                    "入力値": "JPY",
-                    "期待結果": "正常に登録できること",
-                })
-                no += 1
-
-                rows.append({
-                    "No": no,
-                    "Sheet名": sheet_name,
-                    "代表科目": item_name,
-                    "分類": rule_type,
-                    "観点": "コード未定義",
-                    "テスト内容": "未定義コードを入力する",
-                    "入力値": "ZZZ",
-                    "期待結果": "コード値エラーとなること",
                 })
                 no += 1
 
@@ -549,6 +488,18 @@ def build_test_case_df(sheet_name: str, rep_df: pd.DataFrame):
             })
             no += 1
 
+            rows.append({
+                "No": no,
+                "Sheet名": sheet_name,
+                "代表科目": item_name,
+                "分類": rule_type,
+                "観点": "境界値正常",
+                "テスト内容": "0を入力する",
+                "入力値": "0",
+                "期待結果": "正常に登録できること",
+            })
+            no += 1
+
             if p:
                 rows.append({
                     "No": no,
@@ -562,29 +513,15 @@ def build_test_case_df(sheet_name: str, rep_df: pd.DataFrame):
                 })
                 no += 1
 
-            if business_type == "AMOUNT":
                 rows.append({
                     "No": no,
                     "Sheet名": sheet_name,
                     "代表科目": item_name,
                     "分類": rule_type,
-                    "観点": "金額形式異常",
-                    "テスト内容": "整数金額項目に小数を入力する",
-                    "入力値": "123.45",
-                    "期待結果": "型/形式エラーとなること",
-                })
-                no += 1
-
-            if business_type == "CODE":
-                rows.append({
-                    "No": no,
-                    "Sheet名": sheet_name,
-                    "代表科目": item_name,
-                    "分類": rule_type,
-                    "観点": "コード未定義",
-                    "テスト内容": "未定義コード値を入力する",
-                    "入力値": "9999",
-                    "期待結果": "コード値エラーとなること",
+                    "観点": "桁数境界正常",
+                    "テスト内容": "整数桁数ちょうどで入力する",
+                    "入力値": "9" * p,
+                    "期待結果": "正常に登録できること",
                 })
                 no += 1
 
@@ -618,28 +555,28 @@ def build_test_case_df(sheet_name: str, rep_df: pd.DataFrame):
             })
             no += 1
 
-            if s is not None:
-                rows.append({
-                    "No": no,
-                    "Sheet名": sheet_name,
-                    "代表科目": item_name,
-                    "分類": rule_type,
-                    "観点": "小数桁異常",
-                    "テスト内容": "小数桁数超過で入力する",
-                    "入力値": f"小数{s + 1}桁数値",
-                    "期待結果": "common check エラーとなること",
-                })
-                no += 1
+            rows.append({
+                "No": no,
+                "Sheet名": sheet_name,
+                "代表科目": item_name,
+                "分類": rule_type,
+                "観点": "境界値正常",
+                "テスト内容": "0を入力する",
+                "入力値": "0",
+                "期待結果": "正常に登録できること",
+            })
+            no += 1
 
-            if business_type == "AMOUNT":
+            if s is not None:
+                normal_scale = "1." + ("2" * s) if s > 0 else "1"
                 rows.append({
                     "No": no,
                     "Sheet名": sheet_name,
                     "代表科目": item_name,
                     "分類": rule_type,
-                    "観点": "金額小数正常",
-                    "テスト内容": "実務想定の金額小数を入力する",
-                    "入力値": "1000000.25",
+                    "観点": "小数桁境界正常",
+                    "テスト内容": "小数桁数ちょうどで入力する",
+                    "入力値": normal_scale,
                     "期待結果": "正常に登録できること",
                 })
                 no += 1
@@ -649,10 +586,10 @@ def build_test_case_df(sheet_name: str, rep_df: pd.DataFrame):
                     "Sheet名": sheet_name,
                     "代表科目": item_name,
                     "分類": rule_type,
-                    "観点": "金額小数異常",
-                    "テスト内容": "許容小数桁を超える金額を入力する",
-                    "入力値": "1000000.12345",
-                    "期待結果": "小数桁エラーとなること",
+                    "観点": "小数桁異常",
+                    "テスト内容": "小数桁数超過で入力する",
+                    "入力値": f"小数{s + 1}桁数値",
+                    "期待結果": "common check エラーとなること",
                 })
                 no += 1
 
