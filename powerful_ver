@@ -399,22 +399,7 @@ def build_test_case_df(sheet_name: str, rep_df: pd.DataFrame):
     for _, r in rep_df.iterrows():
         item_name = r["補正項目名"]
         rule_type = r["rule種別"]
-        required = r["必須"]
         length_val = r["Length"]
-
-        # 必須
-        if required:
-            rows.append({
-                "No": no,
-                "Sheet名": sheet_name,
-                "代表科目": item_name,
-                "分類": rule_type,
-                "観点": "必須",
-                "テスト内容": "未入力で登録する",
-                "入力値": "NULL",
-                "期待結果": "必須エラーとなること",
-            })
-            no += 1
 
         # text
         if rule_type in {"text_short", "text_middle", "text_long", "text_unknown"}:
