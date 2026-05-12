@@ -190,13 +190,6 @@ def df_to_validation_code(sheet_name: str, df: pd.DataFrame):
 
     for idx, row in work_df.iterrows():
         item_name = str(row[COL_ITEM_NAME]).strip()
-        screen = normalize_mark(row.get(COL_SCREEN, None))
-
-        if not screen:
-            # 非画面表示項目はvalidation_rule対象外
-            rule_dict_map[idx] = {}
-            continue
-
         rule, todos = build_rule_dict(row)
         rule_dict_map[idx] = rule
 
@@ -331,14 +324,11 @@ def build_mapping_df(sheet_name: str, summary_df: pd.DataFrame, config_items: li
         attr = r["属性"]
         length_val = r["Length"]
 
-        if screen_excel:
-            expected_rule, _ = build_rule_dict(pd.Series({
-                COL_ATTR: attr,
-                COL_LENGTH: length_val,
-                COL_REQUIRED: "〇" if required_excel else ""
-            }))
-        else:
-            expected_rule = {}
+        expected_rule, _ = build_rule_dict(pd.Series({
+            COL_ATTR: attr,
+            COL_LENGTH: length_val,
+            COL_REQUIRED: "〇" if required_excel else ""
+        }))
 
         actual_rule = rule_dict_map.get(idx, {})
 
@@ -350,6 +340,8 @@ def build_mapping_df(sheet_name: str, summary_df: pd.DataFrame, config_items: li
         elif expected_rule != actual_rule:
             mapping_result = "NG: rule不一致"
 
+        rules_text = build_rule_summary(actual_rule) if screen_excel else ""
+
         rows.append({
             "Sheet名": sheet_name,
             "No": idx,
@@ -359,7 +351,7 @@ def build_mapping_df(sheet_name: str, summary_df: pd.DataFrame, config_items: li
             "外部設計_画面表示": screen_excel,
             "外部設計_必須": required_excel,
             "rules_config対象": config_target,
-            "rules_validation_rule": build_rule_summary(actual_rule),
+            "rules_validation_rule": rules_text,
             "mapping結果": mapping_result,
         })
 
