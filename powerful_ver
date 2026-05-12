@@ -190,6 +190,13 @@ def df_to_validation_code(sheet_name: str, df: pd.DataFrame):
 
     for idx, row in work_df.iterrows():
         item_name = str(row[COL_ITEM_NAME]).strip()
+        screen = normalize_mark(row.get(COL_SCREEN, None))
+
+        if not screen:
+            # 非画面表示項目はvalidation_rule対象外
+            rule_dict_map[idx] = {}
+            continue
+
         rule, todos = build_rule_dict(row)
         rule_dict_map[idx] = rule
 
@@ -324,11 +331,14 @@ def build_mapping_df(sheet_name: str, summary_df: pd.DataFrame, config_items: li
         attr = r["属性"]
         length_val = r["Length"]
 
-        expected_rule, _ = build_rule_dict(pd.Series({
-            COL_ATTR: attr,
-            COL_LENGTH: length_val,
-            COL_REQUIRED: "〇" if required_excel else ""
-        }))
+        if screen_excel:
+            expected_rule, _ = build_rule_dict(pd.Series({
+                COL_ATTR: attr,
+                COL_LENGTH: length_val,
+                COL_REQUIRED: "〇" if required_excel else ""
+            }))
+        else:
+            expected_rule = {}
 
         actual_rule = rule_dict_map.get(idx, {})
 
