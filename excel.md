@@ -1,0 +1,1 @@
+=IF(D41="VARCHAR", IF(ISNUMBER(SEARCH("""max_len"": " & E41, MID(H41, SEARCH("{", H41), 999))), "OK", "NG"), IF(D41="NUMBER", IF(ISNUMBER(SEARCH("number_" & E41 & "_", MID(H41, SEARCH("{", H41), 999) & "_")), "OK", "NG"), "未知类型"))
