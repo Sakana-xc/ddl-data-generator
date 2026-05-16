@@ -340,6 +340,8 @@ def build_mapping_df(sheet_name: str, summary_df: pd.DataFrame, config_items: li
         elif expected_rule != actual_rule:
             mapping_result = "NG: rule不一致"
 
+        rules_text = build_rule_summary(actual_rule) if screen_excel else ""
+
         rows.append({
             "Sheet名": sheet_name,
             "No": idx,
@@ -349,7 +351,7 @@ def build_mapping_df(sheet_name: str, summary_df: pd.DataFrame, config_items: li
             "外部設計_画面表示": screen_excel,
             "外部設計_必須": required_excel,
             "rules_config対象": config_target,
-            "rules_validation_rule": build_rule_summary(actual_rule),
+            "rules_validation_rule": rules_text,
             "mapping結果": mapping_result,
         })
 
@@ -385,6 +387,11 @@ def choose_representatives(summary_df: pd.DataFrame):
 # test case
 # =========================================
 
+
+def build_text_value(ch: str, ln: int) -> str:
+    return ch * max(1, ln)
+
+
 def build_test_case_df(sheet_name: str, rep_df: pd.DataFrame):
     rows = []
     no = 1
@@ -392,22 +399,7 @@ def build_test_case_df(sheet_name: str, rep_df: pd.DataFrame):
     for _, r in rep_df.iterrows():
         item_name = r["補正項目名"]
         rule_type = r["rule種別"]
-        required = r["必須"]
         length_val = r["Length"]
-
-        # 必須
-        if required:
-            rows.append({
-                "No": no,
-                "Sheet名": sheet_name,
-                "代表科目": item_name,
-                "分類": rule_type,
-                "観点": "必須",
-                "テスト内容": "未入力で登録する",
-                "入力値": "NULL",
-                "期待結果": "必須エラーとなること",
-            })
-            no += 1
 
         # text
         if rule_type in {"text_short", "text_middle", "text_long", "text_unknown"}:
@@ -423,9 +415,21 @@ def build_test_case_df(sheet_name: str, rep_df: pd.DataFrame):
                     "Sheet名": sheet_name,
                     "代表科目": item_name,
                     "分類": rule_type,
+                    "観点": "最小入力",
+                    "テスト内容": "1文字で入力する",
+                    "入力値": "A",
+                    "期待結果": "正常に登録できること",
+                })
+                no += 1
+
+                rows.append({
+                    "No": no,
+                    "Sheet名": sheet_name,
+                    "代表科目": item_name,
+                    "分類": rule_type,
                     "観点": "桁数正常",
                     "テスト内容": "最大桁数ちょうどで入力する",
-                    "入力値": f"{ln}桁文字列",
+                    "入力値": build_text_value("A", ln),
                     "期待結果": "正常に登録できること",
                 })
                 no += 1
@@ -437,7 +441,7 @@ def build_test_case_df(sheet_name: str, rep_df: pd.DataFrame):
                     "分類": rule_type,
                     "観点": "桁数異常",
                     "テスト内容": "最大桁数超過で入力する",
-                    "入力値": f"{ln + 1}桁文字列",
+                    "入力値": build_text_value("B", ln + 1),
                     "期待結果": "桁数エラーとなること",
                 })
                 no += 1
@@ -471,6 +475,18 @@ def build_test_case_df(sheet_name: str, rep_df: pd.DataFrame):
             })
             no += 1
 
+            rows.append({
+                "No": no,
+                "Sheet名": sheet_name,
+                "代表科目": item_name,
+                "分類": rule_type,
+                "観点": "境界値正常",
+                "テスト内容": "0を入力する",
+                "入力値": "0",
+                "期待結果": "正常に登録できること",
+            })
+            no += 1
+
             if p:
                 rows.append({
                     "No": no,
@@ -481,6 +497,18 @@ def build_test_case_df(sheet_name: str, rep_df: pd.DataFrame):
                     "テスト内容": "整数桁数超過で入力する",
                     "入力値": f"{p + 1}桁数値",
                     "期待結果": "common check エラーとなること",
+                })
+                no += 1
+
+                rows.append({
+                    "No": no,
+                    "Sheet名": sheet_name,
+                    "代表科目": item_name,
+                    "分類": rule_type,
+                    "観点": "桁数境界正常",
+                    "テスト内容": "整数桁数ちょうどで入力する",
+                    "入力値": "9" * p,
+                    "期待結果": "正常に登録できること",
                 })
                 no += 1
 
@@ -514,7 +542,32 @@ def build_test_case_df(sheet_name: str, rep_df: pd.DataFrame):
             })
             no += 1
 
+            rows.append({
+                "No": no,
+                "Sheet名": sheet_name,
+                "代表科目": item_name,
+                "分類": rule_type,
+                "観点": "境界値正常",
+                "テスト内容": "0を入力する",
+                "入力値": "0",
+                "期待結果": "正常に登録できること",
+            })
+            no += 1
+
             if s is not None:
+                normal_scale = "1." + ("2" * s) if s > 0 else "1"
+                rows.append({
+                    "No": no,
+                    "Sheet名": sheet_name,
+                    "代表科目": item_name,
+                    "分類": rule_type,
+                    "観点": "小数桁境界正常",
+                    "テスト内容": "小数桁数ちょうどで入力する",
+                    "入力値": normal_scale,
+                    "期待結果": "正常に登録できること",
+                })
+                no += 1
+
                 rows.append({
                     "No": no,
                     "Sheet名": sheet_name,

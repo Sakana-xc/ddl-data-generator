@@ -203,6 +203,9 @@ def gen_timestamp(col, mode):
 
 
 def gen_value(col, mode):
+    if col["column_name"].upper() == "RONRI_SAKUJO_FLG":
+        return 0
+
     semantic = detect_type(col["column_name"])
     dtype = col["data_type"]
 
@@ -249,11 +252,12 @@ def build_sql(table, cols, df):
         vals = [to_sql(r[c]) for c in col_names]
         values.append("(" + ", ".join(vals) + ")")
 
+    values_sql = ",\n".join(values)
     return f"""INSERT INTO {table} (
     {", ".join(col_names)}
 )
 VALUES
-{",\n".join(values)};"""
+{values_sql};"""
 
 
 # =========================================
@@ -268,7 +272,7 @@ ddl = st.text_area("DDL", height=200)
 random_count = st.number_input("ランダム件数", 1, 1000, 5)
 
 
-col1, col2, col3 = st.columns(3)
+col1, col2, col3, col4 = st.columns(4)
 
 with col1:
     btn_min = st.button("最小値生成")
@@ -279,8 +283,11 @@ with col2:
 with col3:
     btn_rand = st.button("ランダム生成")
 
+with col4:
+    btn_max_all = st.button("最大桁数一括生成")
 
-if btn_min or btn_max or btn_rand:
+
+if btn_min or btn_max or btn_rand or btn_max_all:
     table, cols = parse_ddl(ddl)
 
     if not cols:
@@ -312,6 +319,15 @@ if btn_min or btn_max or btn_rand:
         for i in range(random_count):
             row = {c["column_name"]: gen_value(c, "random") for c in cols}
             row["_pattern"] = f"RANDOM_{i+1}"
+            rows.append(row)
+
+    # =========================
+    # 最大桁数一括
+    # =========================
+    if btn_max_all:
+        for i in range(random_count):
+            row = {c["column_name"]: gen_value(c, "max") for c in cols}
+            row["_pattern"] = f"MAX_{i+1}"
             rows.append(row)
 
     df = pd.DataFrame(rows)
